@@ -23,6 +23,7 @@ pub struct ChatPanel {
     providers: Value,
     installs: Value,
     settings: bool,
+    remember: bool,
     model: String,
     key: String,
     prompt: String,
@@ -47,6 +48,7 @@ impl Default for ChatPanel {
             providers: Value::Null,
             installs: Value::Null,
             settings: false,
+            remember: std::env::var("FILMCRAFT_PACKAGED").is_ok_and(|v| v == "1"),
             model: String::new(),
             key: String::new(),
             prompt: String::new(),
@@ -110,7 +112,12 @@ impl ChatPanel {
                 }
                 self.load_model();
                 self.key.clear();
-                self.status = if kind == "config" { "Settings saved for this session" } else { "Ready" }.into();
+                self.status = if kind == "config" {
+                    if value["saved"].as_bool().unwrap_or(false) { "Settings saved on this Mac" } else { "Settings saved for this session" }
+                } else {
+                    "Ready"
+                }
+                .into();
             }
             Ok(value) => {
                 self.session = value["session"].as_str().map(str::to_owned);
@@ -255,7 +262,7 @@ impl ChatPanel {
             ui.horizontal(|ui| {
                 let (dot, _) = ui.allocate_exact_size(vec2(8.0, 14.0), egui::Sense::hover());
                 ui.painter().circle_filled(dot.center(), 2.5, if self.configured() { t.render_green } else { t.text_faint });
-                ui.label(RichText::new(if self.configured() { "API key connected" } else { "Add an API key in settings" }).small().color(t.text_dim));
+                ui.label(RichText::new(if self.configured() { "API key configured" } else { "Add an API key in settings" }).small().color(t.text_dim));
             });
             if self.settings {
                 ui.separator();
@@ -266,11 +273,13 @@ impl ChatPanel {
                 ui.label(RichText::new("API key").color(t.text_dim));
                 let r = ui.add(egui::TextEdit::singleline(&mut self.key).password(true).desired_width(f32::INFINITY).hint_text("Paste key to replace"));
                 register("chat.key", &r, "API key");
+                let r = ui.checkbox(&mut self.remember, "Save on this Mac");
+                register("chat.settings.remember", &r, "Save provider settings on this Mac");
                 ui.horizontal(|ui| {
                     let r = ui.add_enabled(self.pending.is_none() && !self.model.is_empty(), egui::Button::new("Apply"));
                     register("chat.settings.apply", &r, "Apply settings");
                     if r.clicked() {
-                        let mut payload = json!({"provider": self.provider, "model": self.model});
+                        let mut payload = json!({"provider": self.provider, "model": self.model, "persist": self.remember});
                         if !self.key.is_empty() {
                             payload["apiKey"] = Value::String(self.key.clone());
                         }
@@ -280,10 +289,19 @@ impl ChatPanel {
                     let r = ui.add_enabled(self.pending.is_none(), egui::Button::new("Clear key"));
                     register("chat.settings.clear", &r, "Clear API key");
                     if r.clicked() {
-                        self.request("config", "/v1/chat/config".into(), Some(json!({"provider": self.provider, "apiKey": ""})), &ctx);
+                        self.request(
+                            "config",
+                            "/v1/chat/config".into(),
+                            Some(json!({"provider": self.provider, "apiKey": "", "persist": self.remember})),
+                            &ctx,
+                        );
                     }
                 });
-                ui.label(RichText::new("Keys entered here last for this session.").small().color(t.text_dim));
+                ui.label(
+                    RichText::new(if self.remember { "Saved in a private local file (not encrypted)." } else { "Changes last for this session." })
+                        .small()
+                        .color(t.text_dim),
+                );
             }
             if self.provider == "jev" {
                 ui.label(RichText::new("Experimental · Jev vision enabled").small().color(t.text_dim));

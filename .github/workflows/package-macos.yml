@@ -1,0 +1,44 @@
+name: Build macOS preview
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: Mac architecture
+        type: choice
+        options: [arm64, x64]
+        default: arm64
+      version:
+        description: Preview version
+        default: 0.1.0-preview.1
+        required: true
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ${{ inputs.architecture == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    timeout-minutes: 90
+    env:
+      JEV_FILMCRAFT_VERSION: ${{ inputs.version }}
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.0
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - run: npm ci
+      - run: npm run check
+      - run: npm run package:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jev-filmcraft-macos-${{ inputs.architecture }}
+          path: |
+            artifacts/releases/jev-filmcraft-*.zip
+            artifacts/releases/jev-filmcraft-*.sha256
+            artifacts/releases/jev-filmcraft-*.build.json
+          if-no-files-found: error

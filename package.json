@@ -20,7 +20,9 @@
     "patch:filmcraft": "node plugins/filmcraft/native/apply.mjs",
     "chat": "node plugins/filmcraft/dist/cli.js desktop",
     "chat:config": "node plugins/filmcraft/dist/cli.js providers-config",
-    "test:chat-ui": "node plugins/filmcraft/examples/chat-ui-smoke.mjs"
+    "test:chat-ui": "node plugins/filmcraft/examples/chat-ui-smoke.mjs",
+    "package:mac": "node plugins/filmcraft/packaging/macos.mjs",
+    "test:package": "node plugins/filmcraft/packaging/smoke.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

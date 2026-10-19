@@ -47,7 +47,7 @@ export async function startApi(service: FilmcraftService, options: { token: stri
       if (route.startsWith('/v1/chat/')) {
         if (!chat) throw new PluginError('CHAT_DISABLED', 'Start the desktop chat launcher to enable chat', 404);
         if (req.method === 'GET' && route === '/v1/chat/providers') return respond(res, 200, { ...chat.providers(), installs: options.chat?.installs ?? {} });
-        if (req.method === 'POST' && route === '/v1/chat/config') return respond(res, 200, chat.configure(await body(req)));
+        if (req.method === 'POST' && route === '/v1/chat/config') return respond(res, 200, await chat.configure(await body(req)));
         if (req.method === 'POST' && route === '/v1/chat/runs') return respond(res, 202, chat.start(await body(req)));
         const match = route.match(/^\/v1\/chat\/runs\/([a-f0-9-]+)(\/cancel)?$/);
         if (match && req.method === 'GET' && !match[2]) return respond(res, 200, chat.get(match[1]!));

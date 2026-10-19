@@ -67,3 +67,35 @@ test('missing custom files and malformed settings fail without echoing secrets',
     });
   }
 });
+
+test('remembered UI settings survive restart, preserve other providers, and clear saved keys', async t => {
+  const env = await configFile(t);
+  await initProviderConfig(env);
+  const service = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', env);
+  await service.configure({ provider: 'claude', apiKey: 'fixture-claude', persist: true });
+  const response = await service.configure({ provider: 'jev', apiKey: 'fixture-jev', model: 'fixture-model', persist: true });
+  assert.equal(response.saved, true);
+  assert(!JSON.stringify(response).includes('fixture-jev'));
+  let loaded = await loadProviderEnvironment(env);
+  assert.equal(loaded.TYPESAFE_API_KEY, 'fixture-jev');
+  assert.equal(loaded.ANTHROPIC_API_KEY, 'fixture-claude');
+  assert.equal(loaded.JEV_MODEL, 'fixture-model');
+  if (process.platform !== 'win32') assert.equal((await stat(env.FILMCRAFT_PROVIDERS_CONFIG)).mode & 0o777, 0o600);
+  const restarted = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', loaded);
+  assert(restarted.providers().providers.find(p => p.id === 'jev')?.configured);
+  await service.configure({ provider: 'jev', apiKey: 'session-only' });
+  assert.equal((await loadProviderEnvironment(env)).TYPESAFE_API_KEY, 'fixture-jev');
+  await service.configure({ provider: 'jev', apiKey: '', persist: true });
+  loaded = await loadProviderEnvironment(env);
+  assert.equal(loaded.TYPESAFE_API_KEY, '');
+  assert.equal(loaded.ANTHROPIC_API_KEY, 'fixture-claude');
+});
+
+test('failed settings saves preserve the file and the current session configuration', async t => {
+  const env = await configFile(t);
+  const service = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', env);
+  await writeFile(env.FILMCRAFT_PROVIDERS_CONFIG, '{"broken":"fixture-secret"');
+  await assert.rejects(service.configure({ provider: 'jev', apiKey: 'fixture-new-key', persist: true }), /Invalid provider configuration/);
+  assert.equal((await readFile(env.FILMCRAFT_PROVIDERS_CONFIG, 'utf8')), '{"broken":"fixture-secret"');
+  assert.equal(service.providers().providers.find(p => p.id === 'jev')?.configured, false);
+});

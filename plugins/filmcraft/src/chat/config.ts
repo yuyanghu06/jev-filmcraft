@@ -1,4 +1,5 @@
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { repository } from '../config.js';
@@ -15,12 +16,12 @@ export function providerConfigPath(env: NodeJS.ProcessEnv = process.env) {
 }
 
 /** Load only provider settings; never mutate process.env or pass file credentials to FilmCraft. */
-export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+async function readProviderConfig(env: NodeJS.ProcessEnv): Promise<z.infer<typeof schema>> {
   const path = providerConfigPath(env);
   let file;
   try { file = await open(path, 'r'); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !env.FILMCRAFT_PROVIDERS_CONFIG) return { ...env };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !env.FILMCRAFT_PROVIDERS_CONFIG) return {};
     throw new PluginError('CONFIG', `Cannot read provider configuration at ${path}. Run npm run chat:config to create it.`, 400);
   }
   let value: unknown;
@@ -36,7 +37,11 @@ export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.e
     const fields = parsed.error.issues.map(issue => issue.path.join('.') || 'root').join(', ');
     throw new PluginError('CONFIG', `Invalid provider configuration fields: ${fields}. Use claude/chatgpt/jev objects with apiKey and model strings.`, 400);
   }
-  const config = parsed.data;
+  return parsed.data;
+}
+
+export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+  const config = await readProviderConfig(env);
   // Explicit environment values (including empty keys) override the file. Either Jev key alias wins.
   return {
     ...env,
@@ -47,6 +52,25 @@ export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.e
     TYPESAFE_API_KEY: env.TYPESAFE_API_KEY ?? env.JEV_API_KEY ?? config.jev?.apiKey,
     JEV_MODEL: env.JEV_MODEL ?? config.jev?.model,
   };
+}
+
+/** Persist only explicitly supplied fields, atomically, with owner-only permissions. */
+export async function saveProviderConfig(provider: 'claude' | 'chatgpt' | 'jev', patch: { apiKey?: string; model?: string }, env: NodeJS.ProcessEnv) {
+  const parsed = settings.safeParse(patch);
+  if (!parsed.success) throw new PluginError('CONFIG', 'Invalid provider settings', 400);
+  await initProviderConfig(env);
+  const config = await readProviderConfig(env);
+  config[provider] = { ...config[provider], ...parsed.data };
+  const path = providerConfigPath(env);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporary, 'wx', 0o600);
+    try { await file.writeFile(JSON.stringify(config, null, 2) + '\n'); await file.sync(); }
+    finally { await file.close(); }
+    await rename(temporary, path);
+  } catch {
+    throw new PluginError('CONFIG', 'Could not save provider settings. Check that the configuration directory is writable.', 400);
+  } finally { await rm(temporary, { force: true }).catch(() => {}); }
 }
 
 /** Create an owner-only template without ever replacing a user's existing credentials. */

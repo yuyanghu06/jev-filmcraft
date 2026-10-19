@@ -6,10 +6,11 @@ import { PluginError, errorMessage } from '../core.js';
 import { runClaude, runChatgpt, toolText } from './providers.js';
 import type { ProviderId, ProviderConfig, Turn } from './providers.js';
 import { runJev } from './jev.js';
+import { saveProviderConfig } from './config.js';
 
 const provider = z.enum(['claude', 'chatgpt', 'jev']);
 const startSchema = z.strictObject({ provider, session: z.string().uuid().optional(), message: z.string().trim().min(1).max(16000) });
-const configSchema = z.strictObject({ provider, apiKey: z.string().max(4096).optional(), model: z.string().trim().min(1).max(200).optional() });
+const configSchema = z.strictObject({ provider, apiKey: z.string().trim().max(4096).refine(value => !/[\r\n]/.test(value)).optional(), model: z.string().trim().min(1).max(200).optional(), persist: z.boolean().optional() });
 type Event = { kind: 'user' | 'assistant' | 'tool' | 'result' | 'error'; text: string };
 interface Run { id: string; session: string; provider: ProviderId; status: 'running' | 'done' | 'error' | 'stopping' | 'stopped'; events: Event[] }
 interface Session { provider: ProviderId; turns: Turn[] }
@@ -19,7 +20,8 @@ export class ChatService {
   private sessions = new Map<string, Session>();
   private runs = new Map<string, Run>();
   private active?: { abort: AbortController; task: Promise<void>; run: Run };
-  constructor(private url: string, private token: string, env = process.env, private providerFetch: typeof fetch = fetch) {
+  private configuring = false;
+  constructor(private url: string, private token: string, private env = process.env, private providerFetch: typeof fetch = fetch) {
     this.configs = {
       claude: { apiKey: env.ANTHROPIC_API_KEY ?? '', model: env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6' },
       chatgpt: { apiKey: env.OPENAI_API_KEY ?? '', model: env.OPENAI_MODEL ?? 'gpt-5.4' },
@@ -29,18 +31,22 @@ export class ChatService {
   providers() {
     return { providers: Object.entries(this.configs).map(([id, config]) => ({ id, model: config.model, configured: !!config.apiKey, experimental: id === 'jev' })), experimentalJevHeader: 'TypeSafe-Danger-Zone-Images: true' };
   }
-  configure(input: unknown) {
+  async configure(input: unknown) {
     const parsed = configSchema.safeParse(input);
     if (!parsed.success) throw new PluginError('INVALID_ARGUMENTS', 'Expected provider and optional apiKey/model', 400);
-    if (this.active) throw new PluginError('BUSY', 'Wait for the active turn to finish before changing credentials', 409);
-    const { provider, ...patch } = parsed.data;
-    Object.assign(this.configs[provider], patch);
-    return this.providers();
+    if (this.active || this.configuring) throw new PluginError('BUSY', 'Wait for the active operation before changing credentials', 409);
+    const { provider, persist, ...patch } = parsed.data;
+    this.configuring = true;
+    try {
+      if (persist) await saveProviderConfig(provider, patch, this.env);
+      Object.assign(this.configs[provider], patch);
+      return { ...this.providers(), saved: !!persist };
+    } finally { this.configuring = false; }
   }
   start(input: unknown) {
     const parsed = startSchema.safeParse(input);
     if (!parsed.success) throw new PluginError('INVALID_ARGUMENTS', 'Expected provider, message (1–16000 characters), and optional session UUID', 400);
-    if (this.active) throw new PluginError('BUSY', 'Another chat turn is editing this project. Stop or wait for it first.', 409);
+    if (this.active || this.configuring) throw new PluginError('BUSY', 'Another operation is running. Stop or wait for it first.', 409);
     const { provider, message } = parsed.data;
     const config = { ...this.configs[provider] };
     if (!config.apiKey) throw new PluginError('MISSING_KEY', `Add an API key for ${provider} in chat Settings`, 400);

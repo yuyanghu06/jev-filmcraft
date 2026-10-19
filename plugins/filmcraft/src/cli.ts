@@ -42,7 +42,7 @@ async function main() {
     return;
   }
   if (action === 'config' && process.argv.length === 3) {
-    process.stdout.write(JSON.stringify({ mcpServers: { filmcraft: { command: process.execPath, args: [fileURLToPath(import.meta.url), 'mcp'] } } }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ mcpServers: { filmcraft: { command: process.execPath, args: [process.env.FILMCRAFT_LAUNCHER ?? fileURLToPath(import.meta.url), 'mcp'] } } }, null, 2) + '\n');
     return;
   }
   if (!action || action === '--help' || action === 'help') {
