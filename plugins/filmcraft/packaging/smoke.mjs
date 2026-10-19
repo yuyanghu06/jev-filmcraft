@@ -62,7 +62,8 @@ const verifyBundle = async () => {
   else execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
 };
 const waitFor = async (predicate, message) => {
-  for (let i = 0; i < 600; i++) {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
     if (await predicate()) return;
     await delay(100);
   }
@@ -87,6 +88,13 @@ const launch = async (finder = false) => {
   }, 'Packaged app did not start');
   client = new Client({ name: 'packaged-app-smoke', version: '0.1.0' });
   await client.connect(new StdioClientTransport({ command: node, args: [entry, 'desktop-mcp'], env, stderr: 'inherit' }));
+  if (windows) {
+    // An API connection alone does not prove a GUI launcher actually showed its window.
+    // MainWindowHandle excludes hidden windows. Match only this test's installed executable.
+    await waitFor(() => execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command',
+      "$editor = Get-Process -Name filmcraft -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $env:JEV_EDITOR }; if ($editor | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) { Write-Output 'visible' }"],
+    { env: { ...env, JEV_EDITOR: join(app, 'bin/filmcraft.exe') }, encoding: 'utf8', windowsHide: true, timeout: 10_000 }).trim() === 'visible', 'Editor process started without a visible Windows window');
+  }
 };
 const call = async (name, args = {}) => {
   const result = await client.callTool({ name: `filmcraft_${name}`, arguments: args });
@@ -139,7 +147,7 @@ try {
   assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.apiKey, '');
   await quit();
   await verifyBundle(); // Nothing wrote into the installed app, even when saving keys and restarting.
-  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture, testHostArchitecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, platform: windows ? 'windows-x64' : `macos-${architecture}`, bundledMcp: true, toolCount: 54, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
+  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture, testHostArchitecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, ...(windows ? { visibleWindowsWindow: true } : {}), platform: windows ? 'windows-x64' : `macos-${architecture}`, bundledMcp: true, toolCount: 54, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
   console.log('Packaged app passed: relocated launch, bundled MCP, real editing/export round trip, UI key persistence, restart, clean shutdown, unchanged installed app. No live cloud requests.');
 } finally {
   if (client) {

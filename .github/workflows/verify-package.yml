@@ -1,0 +1,44 @@
+name: Verify existing desktop package
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Build desktop previews run ID containing the package artifact
+        required: true
+      platform:
+        type: choice
+        options: [windows-x64, macos-x64, macos-arm64]
+        default: windows-x64
+      version:
+        default: 0.1.0-preview.2
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ${{ inputs.platform == 'windows-x64' && 'windows-2025' || inputs.platform == 'macos-x64' && 'macos-15-intel' || 'macos-15' }}
+    timeout-minutes: 15
+    env:
+      JEV_FILMCRAFT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.0
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: jev-filmcraft-${{ inputs.platform }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: artifacts/releases
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ inputs.platform }}
+          path: artifacts/releases/verification
+          if-no-files-found: ignore
