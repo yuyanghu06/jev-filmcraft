@@ -9,8 +9,9 @@ Get the matching ZIP from [Releases](https://github.com/yuyanghu06/jev-filmcraft
 | Computer | Download suffix | Installation |
 | --- | --- | --- |
 | Mac with Apple Silicon, macOS 13.5+ | `macos-arm64.zip` | Unzip, drag **Jev FilmCraft.app** into Applications, then open it. |
-| Mac with Intel, macOS 13.5+ | `macos-x64.zip` | Unzip, drag **Jev FilmCraft.app** into Applications, then open it. |
 | Windows 10/11, Intel or AMD x64 | `windows-x64.zip` | Extract the entire **Jev FilmCraft** folder to a permanent location, then double-click **JevFilmCraft.exe**. |
+
+Intel Mac build tooling is included, but Preview 2 does not ship an Intel download: the automated Finder restart check has not passed.
 
 On Windows, keep `bin`, `node`, `runtime` and `Licenses` beside the launcher. Create a shortcut to the launcher if desired. Do not run it inside the ZIP. It uses the .NET Framework included with Windows; no developer tools are required. Windows ARM is not a native target of this preview.
 
@@ -57,8 +58,8 @@ Both builders require Node 22+. `JEV_FILMCRAFT_VERSION` sets the release version
 
 Outputs are under `artifacts/releases`: ZIP, SHA-256 checksum, build metadata, and staging files. `--skip-build` skips only Cargo compilation; use it only with matching current native release binaries. Mac compilation uses `MACOSX_DEPLOYMENT_TARGET=13.5`; Windows uses `x86_64-pc-windows-msvc` with static CRT.
 
-The **Build desktop previews** GitHub workflow builds Windows x64 and Intel Mac, then tests each extracted package before uploading artifacts. **Build macOS preview** builds either Mac architecture on demand. Workflows do not publish automatically; inspect their reports before creating a release. The Apple Silicon package can also be tested locally on a Mac.
+The **Build desktop previews** GitHub workflow builds Windows x64 and Intel Mac, then tests each extracted package. It retains built packages for debugging even when a test fails; an uploaded artifact alone does not mean validation passed. **Build macOS preview** builds either Mac architecture on demand. Workflows do not publish automatically; inspect their reports before creating a release. The Apple Silicon package can also be tested locally on a Mac.
 
-`test:package` extracts to a directory with spaces and an apostrophe, then launches the native app with only operating-system directories on PATH. It runs bundled MCP, performs real timeline editing/render/export, enters a dummy key in the sidebar, restarts to verify persistence, checks clean shutdown, and verifies the installed app is unchanged (codesign on Mac, file hashes on Windows). Mac restart uses Launch Services. Windows CI selects FilmCraft's software renderer through `FILMCRAFT_GRAPHICS=software`; normal launches use the editor's default renderer and fallback logic. Reports and screenshots are under `artifacts/releases/verification`. No live model is called.
+`test:package` extracts to a directory with spaces and an apostrophe, then launches the native app with only operating-system directories on PATH. It runs bundled MCP, performs real timeline editing/render/export, enters a dummy key in the sidebar, restarts to verify persistence, checks clean shutdown, and verifies the installed app is unchanged (codesign on Mac, file hashes on Windows). Mac restart uses Launch Services. Windows CI selects FilmCraft's software renderer through `FILMCRAFT_GRAPHICS=software`; normal launches use the editor's default renderer and fallback logic. The **Verify existing desktop package** workflow can recheck an immutable package artifact without rebuilding the editor, including confirming a visible Windows window. Reports and screenshots are under `artifacts/releases/verification`. No live model is called.
 
 `MACOS_SIGN_IDENTITY` can select a builder-supplied identity, but the script does not notarize. Windows packaging currently ships unsigned executables. A public release without these prompts needs owner-supplied platform signing credentials and Mac notarization.

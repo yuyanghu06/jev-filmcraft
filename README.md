@@ -6,10 +6,10 @@ A separate API/MCP plugin over the real [FilmCraft](https://github.com/storytold
 
 Download a ZIP for your computer from [Releases](https://github.com/yuyanghu06/jev-filmcraft/releases):
 
-- **Mac (Apple Silicon or Intel, macOS 13.5+):** unzip, drag **Jev FilmCraft.app** into Applications, and open it.
+- **Mac (Apple Silicon, macOS 13.5+):** unzip, drag **Jev FilmCraft.app** into Applications, and open it.
 - **Windows (x64, Windows 10/11):** extract the entire **Jev FilmCraft** folder somewhere permanent, then double-click **JevFilmCraft.exe**. Keep its companion folders beside it.
 
-Node, Rust and a FilmCraft checkout are not needed. Choose a provider in the sidebar, open Settings, paste your own API key, and click Apply. **Save on this device** remembers it in a private, unencrypted local file outside the app.
+Intel Mac is not included in this preview; its launcher restart validation is still failing. Node, Rust and a FilmCraft checkout are not needed. Choose a provider in the sidebar, open Settings, paste your own API key, and click Apply. **Save on this device** remembers it in a private, unencrypted local file outside the app.
 
 These preview downloads are not notarized on Mac or signed on Windows, so first launch can show an OS security prompt. See [desktop installation and packaging details](plugins/filmcraft/packaging/README.md). The source setup below remains available for development and MCP-only use.
 
