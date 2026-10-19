@@ -24,6 +24,8 @@ export async function copyRuntime(runtime) {
   // The CLI imports its workspace by relative path. A Windows npm junction points at the build
   // machine; removing this unused workspace link makes the archive safe to relocate.
   await rm(join(runtime, 'node_modules/@jev/filmcraft-plugin'), { recursive: true, force: true });
+  // npm also creates a bin link (or Windows shims) targeting that removed workspace link.
+  for (const suffix of ['', '.cmd', '.ps1']) await rm(join(runtime, `node_modules/.bin/jev-filmcraft${suffix}`), { force: true });
 }
 export async function copyLicenses(upstream, licenses, target, output, icon) {
   for (const file of ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md']) await cp(join(upstream, file), join(licenses, file));
