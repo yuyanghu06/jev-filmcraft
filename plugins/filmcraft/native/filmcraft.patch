@@ -1,0 +1,54 @@
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index 3b539112..6afebbe7 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -100,6 +100,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
+     let p = &req.params;
+     let s = |k: &str| p.get(k).and_then(Value::as_str);
+     match req.method.as_str() {
++        #[cfg(not(target_arch = "wasm32"))]
++        "chat.inspect" => ok(app.jev_chat.inspect()),
+         "engine.execute" | "ui.menu.invoke" => {
+             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
+             let params = p.get("params").cloned().unwrap_or(json!({}));
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index c838e6fe..5528c467 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -39,6 +39,9 @@ pub mod credits;
+ pub mod dock;
+ mod dock_shared;
+ mod dock_ui;
++#[cfg(not(target_arch = "wasm32"))]
++#[path = "../../../../../plugins/filmcraft/native/panel.rs"]
++mod jev_chat;
+ /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
+ const MAX_THUMB_TEXTURES: usize = 512;
+ 
+@@ -275,6 +278,8 @@ pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+ ];
+ 
+ pub struct FilmcraftApp {
++    #[cfg(not(target_arch = "wasm32"))]
++    jev_chat: jev_chat::ChatPanel,
+     pub session: Session,
+     pub ui: UiState,
+     pub tokens: Tokens,
+@@ -544,6 +549,8 @@ impl FilmcraftApp {
+             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
+         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
+         Self {
++            #[cfg(not(target_arch = "wasm32"))]
++            jev_chat: Default::default(),
+             session,
+             ui: UiState { language, ..UiState::default() },
+             tokens: Tokens::for_kind(ThemeKind::Dark),
+@@ -1851,6 +1858,8 @@ impl FilmcraftApp {
+         }
+         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
+         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
++        #[cfg(not(target_arch = "wasm32"))]
++        let body = self.jev_chat.show(ui, body, &t, &mut |id, response, label| self.auto.add_response(id, response, label));
+         match self.ui.mode {
+             state::Mode::Edit => self.dock_area(ui, body),
+             state::Mode::Import => panels::import_mode::show(self, ui, body),

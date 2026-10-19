@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "filmcraft": {
+      "command": "node",
+      "args": ["/absolute/path/jev-filmcraft/plugins/filmcraft/dist/cli.js", "mcp"]
+    }
+  }
+}

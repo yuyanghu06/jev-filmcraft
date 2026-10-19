@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "filmcraft": {
+      "command": "node",
+      "args": ["/absolute/path/jev-filmcraft/plugins/filmcraft/dist/cli.js", "mcp"],
+      "env": {
+        "FILMCRAFT_API_URL": "http://127.0.0.1:8765",
+        "FILMCRAFT_API_TOKEN": "replace-with-the-api-token-at-least-24-characters"
+      }
+    }
+  }
+}

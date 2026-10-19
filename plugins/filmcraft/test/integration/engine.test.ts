@@ -1,0 +1,74 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { NativeBackend } from '../../src/adapters/native.js';
+import { FilmcraftService } from '../../src/api/service.js';
+import { startApi } from '../../src/api/server.js';
+import { FilmcraftApiClient } from '../../src/api/client.js';
+import { nativeOptions, repository } from '../../src/config.js';
+import { resultData } from '../../src/core.js';
+import { tools } from '../../src/tools/catalog.js';
+import { setTimeout } from 'node:timers/promises';
+// @ts-expect-error Example JavaScript is also the reproducible integration scenario.
+import { editDemo } from '../../examples/workflow.mjs';
+
+test('real MCP stdio → HTTP API → FilmCraft: full edit, render, save/reopen and export round trip', { timeout: 180_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-filmcraft-e2e-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const client = new Client({ name: 'jev-filmcraft-integration', version: '0.1.0' });
+  t.after(() => client.close());
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(repository, 'plugins/filmcraft/dist/cli.js'), 'mcp'], stderr: 'inherit', env: { ...process.env as Record<string, string>, FILMCRAFT_DATA_DIR: join(dir, 'prefs'), FILMCRAFT_MODE: 'headless', FILMCRAFT_DEMO: 'false' } }));
+  const catalog = await client.listTools();
+  assert(catalog.tools.length > 40);
+  const report = await editDemo(client, dir);
+  assert(report.toolsCalled > 40);
+  const resources = await client.listResources();
+  assert.equal(resources.resources.length, 2);
+  const document = await client.readResource({ uri: 'filmcraft://document' });
+  assert.equal(JSON.parse(String(document.contents[0]?.text)).sequence.id, report.sequence);
+  const bad = await client.callTool({ name: 'filmcraft_clip_trim', arguments: { clip: 'typo' } });
+  assert.equal(bad.isError, true);
+});
+
+test('native catalog coverage, failed batches, and shared API clients preserve state', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-filmcraft-api-'));
+  const backend = await NativeBackend.connect({ ...nativeOptions(), mode: 'headless', demo: false, project: undefined, dataDir: dir });
+  const api = await startApi(new FilmcraftService(backend), { token: 'integration-token-0123456789-abcdef', port: 0 });
+  t.after(async () => { await api.close(); await backend.close(); await rm(dir, { recursive: true, force: true }); });
+  const a = new FilmcraftApiClient(api.url, 'integration-token-0123456789-abcdef');
+  const b = new FilmcraftApiClient(api.url, 'integration-token-0123456789-abcdef');
+  const all = resultData(await backend.call('command_list', {})) as { id: string }[];
+  assert(all.length >= 650);
+  for (const tool of tools) if (tool.command) assert(all.some(c => c.id === tool.command), `${tool.name} points at nonexistent command ${tool.command}`);
+  const failed = await a.callTool('filmcraft_batch', { steps: [{ id: 'file.newProject', params: { name: 'Shared project' } }, { id: 'not.real' }, { id: 'file.newBin', params: { name: 'Must not execute' } }] });
+  assert(failed.isError);
+  const result = resultData(failed) as { completed: number; failed: number; results: unknown[] };
+  assert.equal(result.completed, 1); assert.equal(result.failed, 1); assert.equal(result.results.length, 2);
+  const document = resultData(await b.callTool('filmcraft_inspect')) as { project: { name: string; root: { children: unknown[] } } };
+  assert.equal(document.project.name, 'Shared project');
+  assert.equal(document.project.root.children.length, 0);
+  assert.equal((await a.callTool('filmcraft_ui_inspect').catch(e => e)).code, 'BRIDGE_REQUIRED');
+  const continued = resultData(await a.callTool('filmcraft_batch', { stop_on_error: false, steps: [{ id: 'not.real' }, { id: 'file.newBin', params: { name: 'Continued' } }] })) as { completed: number; failed: number };
+  assert.equal(continued.completed, 1); assert.equal(continued.failed, 1);
+  await a.callTool('filmcraft_sequence_create', { name: 'Cancellation test', width: 640, height: 360, fps: 24 });
+  const matte = resultData(await a.callTool('filmcraft_execute', { id: 'file.newColorMatte', params: { seconds: 120, color: '#ff3300' } })) as { item: number };
+  await a.callTool('filmcraft_clip_place', { item: matte.item, track: 'V1', seconds: 0 });
+  const started = resultData(await a.callTool('filmcraft_export_start', { path: join(dir, 'cancel.mp4'), format: 'h264' })) as { job: number };
+  assert.equal(typeof started.job, 'number');
+  const cancel = await b.callTool('filmcraft_jobs_cancel', { job: started.job });
+  assert(!cancel.isError);
+  let job: { id: number; finished: boolean; result?: { error?: string } } | undefined;
+  const deadline = Date.now() + 10_000;
+  do {
+    const jobs = resultData(await b.callTool('filmcraft_jobs_list')) as NonNullable<typeof job>[];
+    job = jobs.find(j => j.id === started.job);
+    if (job?.finished) break;
+    await setTimeout(50);
+  } while (Date.now() < deadline);
+  assert(job?.finished, 'Cancellation must reach a terminal state');
+  assert.match(job.result?.error ?? '', /cancel/i);
+});

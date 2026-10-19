@@ -1,0 +1,7 @@
+node_modules/
+plugins/filmcraft/dist/
+artifacts/
+.env
+plugins/filmcraft/config/*.local.json
+*.log
+.DS_Store

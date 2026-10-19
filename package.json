@@ -1,0 +1,28 @@
+{
+  "name": "jev-filmcraft",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "plugins/filmcraft"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @jev/filmcraft-plugin",
+    "build:filmcraft": "node plugins/filmcraft/native/build.mjs cli",
+    "build:desktop": "node plugins/filmcraft/native/build.mjs desktop",
+    "api": "node plugins/filmcraft/dist/cli.js api",
+    "mcp": "node plugins/filmcraft/dist/cli.js mcp",
+    "mcp:config": "node plugins/filmcraft/dist/cli.js config",
+    "test": "npm test --workspace @jev/filmcraft-plugin",
+    "test:integration": "npm run test:integration --workspace @jev/filmcraft-plugin",
+    "demo": "node plugins/filmcraft/examples/demo.mjs",
+    "test:bridge": "node plugins/filmcraft/examples/bridge-smoke.mjs",
+    "check": "npm run build && npm test",
+    "patch:filmcraft": "node plugins/filmcraft/native/apply.mjs",
+    "chat": "node plugins/filmcraft/dist/cli.js desktop",
+    "chat:config": "node plugins/filmcraft/dist/cli.js providers-config",
+    "test:chat-ui": "node plugins/filmcraft/examples/chat-ui-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

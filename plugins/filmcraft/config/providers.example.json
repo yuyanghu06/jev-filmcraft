@@ -1,0 +1,14 @@
+{
+  "claude": {
+    "apiKey": "",
+    "model": "claude-sonnet-4-6"
+  },
+  "chatgpt": {
+    "apiKey": "",
+    "model": "gpt-5.4"
+  },
+  "jev": {
+    "apiKey": "",
+    "model": "jev-latest"
+  }
+}

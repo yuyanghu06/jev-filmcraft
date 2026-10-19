@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "filmcraft": {
+      "command": "node",
+      "args": ["/absolute/path/jev-filmcraft/plugins/filmcraft/dist/cli.js", "mcp"],
+      "env": {
+        "FILMCRAFT_MODE": "bridge",
+        "FILMCRAFT_BRIDGE": "127.0.0.1:9876"
+      }
+    }
+  }
+}
