@@ -42,6 +42,7 @@ const env = windows ? {
   TEMP: tmpdir(), TMP: tmpdir(), PATH: `${join(system, 'System32')};${system}`,
   FILMCRAFT_GRAPHICS: 'software', FILMCRAFT_STATE_DIR: state,
 } : { HOME: process.env.HOME, TMPDIR: tmpdir(), LANG: 'en_US.UTF-8', PATH: '/usr/bin:/bin', FILMCRAFT_STATE_DIR: state };
+const architecture = execFileSync(node, ['-p', 'process.arch'], { env, encoding: 'utf8', windowsHide: true }).trim();
 let child;
 let session;
 let client;
@@ -138,7 +139,7 @@ try {
   assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.apiKey, '');
   await quit();
   await verifyBundle(); // Nothing wrote into the installed app, even when saving keys and restarting.
-  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, platform, bundledMcp: true, toolCount: 54, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
+  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture, testHostArchitecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, platform: windows ? 'windows-x64' : `macos-${architecture}`, bundledMcp: true, toolCount: 54, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
   console.log('Packaged app passed: relocated launch, bundled MCP, real editing/export round trip, UI key persistence, restart, clean shutdown, unchanged installed app. No live cloud requests.');
 } finally {
   if (client) {

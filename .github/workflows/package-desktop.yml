@@ -2,6 +2,11 @@ name: Build desktop previews
 on:
   workflow_dispatch:
     inputs:
+      platform:
+        description: Platforms to build and test
+        type: choice
+        options: [all, windows-x64, macos-x64]
+        default: all
       version:
         description: Preview version
         default: 0.1.0-preview.2
@@ -13,14 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: windows-2025
-            platform: windows-x64
-            command: package:windows
-          - runner: macos-15-intel
-            platform: macos-x64
-            command: package:mac
-    runs-on: ${{ matrix.runner }}
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["windows-x64","macos-x64"]' || format('["{0}"]', inputs.platform)) }}
+    runs-on: ${{ matrix.platform == 'windows-x64' && 'windows-2025' || 'macos-15-intel' }}
     timeout-minutes: 90
     env:
       JEV_FILMCRAFT_VERSION: ${{ inputs.version }}
@@ -43,10 +42,14 @@ jobs:
           cache-on-failure: true
       - run: npm ci
       - run: npm run check
-      - run: npm run ${{ matrix.command }}
+      - id: build
+        run: npm run ${{ matrix.platform == 'windows-x64' && 'package:windows' || 'package:mac' }}
       - name: Test extracted app and bundled MCP
         run: npm run test:package
       - uses: actions/upload-artifact@v4
+        # Preserve successful builds for debugging even when the package test fails.
+        # Downloadable workflow artifacts are not published GitHub releases.
+        if: always() && steps.build.outcome == 'success'
         with:
           name: jev-filmcraft-${{ matrix.platform }}
           path: |
