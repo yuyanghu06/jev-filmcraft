@@ -42,8 +42,30 @@ jobs:
           cache-on-failure: true
       - run: npm ci
       - run: npm run check
+      - id: upstream
+        shell: bash
+        run: echo "revision=$(git -C vendor/filmcraft rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: native
+        uses: actions/cache/restore@v4
+        with:
+          # Packaging/test-only fixes can reuse these exact native inputs without relinking.
+          key: native-v1-${{ matrix.platform }}-rust1.95-${{ steps.upstream.outputs.revision }}-${{ hashFiles('plugins/filmcraft/native/*', 'plugins/filmcraft/packaging/distribution.patch', 'plugins/filmcraft/packaging/macos.mjs', 'plugins/filmcraft/packaging/windows.mjs') }}
+          path: |
+            vendor/filmcraft/target/release/filmcraft
+            vendor/filmcraft/target/release/filmcraft-cli
+            vendor/filmcraft/target/x86_64-pc-windows-msvc/release/filmcraft.exe
+            vendor/filmcraft/target/x86_64-pc-windows-msvc/release/filmcraft-cli.exe
       - id: build
-        run: npm run ${{ matrix.platform == 'windows-x64' && 'package:windows' || 'package:mac' }}
+        run: npm run ${{ matrix.platform == 'windows-x64' && 'package:windows' || 'package:mac' }} -- ${{ steps.native.outputs.cache-hit == 'true' && '--skip-build' || '' }}
+      - uses: actions/cache/save@v4
+        if: steps.build.outcome == 'success' && steps.native.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.native.outputs.cache-primary-key }}
+          path: |
+            vendor/filmcraft/target/release/filmcraft
+            vendor/filmcraft/target/release/filmcraft-cli
+            vendor/filmcraft/target/x86_64-pc-windows-msvc/release/filmcraft.exe
+            vendor/filmcraft/target/x86_64-pc-windows-msvc/release/filmcraft-cli.exe
       - name: Test extracted app and bundled MCP
         run: npm run test:package
       - uses: actions/upload-artifact@v4
