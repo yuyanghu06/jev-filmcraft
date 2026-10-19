@@ -1,14 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, readFile, readdir, rm, writeFile, chmod } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile, chmod } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { collectRustLicenses } from './licenses.mjs';
+import { copyRuntime, copyLicenses } from './common.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const here = dirname(fileURLToPath(import.meta.url));
 const upstream = resolve(process.env.FILMCRAFT_DIR ?? join(root, 'vendor/filmcraft'));
-const version = process.env.JEV_FILMCRAFT_VERSION ?? '0.1.0-preview.1';
+const version = process.env.JEV_FILMCRAFT_VERSION ?? '0.1.0-preview.2';
 if (process.platform !== 'darwin' || !['arm64', 'x64'].includes(process.arch)) throw new Error('Build on a Mac with the target architecture.');
 if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new Error('Invalid release version');
 if (process.argv.slice(2).some(a => a !== '--skip-build')) throw new Error('Usage: macos.mjs [--skip-build]');
@@ -62,24 +62,9 @@ await cp(join(work, nodeName, 'bin/node'), join(resources, 'node/bin/node'));
 await cp(join(work, nodeName, 'LICENSE'), join(licenses, 'Node-LICENSE.txt'));
 await chmod(join(resources, 'node/bin/node'), 0o755);
 
-// Preserve the runtime's workspace layout, but copy only compiled code and the empty template.
-for (const file of ['package.json', 'package-lock.json']) await cp(join(root, file), join(runtime, file));
-await mkdir(join(runtime, 'plugins/filmcraft/config'), { recursive: true });
-await cp(join(root, 'plugins/filmcraft/package.json'), join(runtime, 'plugins/filmcraft/package.json'));
-await cp(join(root, 'plugins/filmcraft/dist'), join(runtime, 'plugins/filmcraft/dist'), { recursive: true });
-await cp(join(root, 'plugins/filmcraft/config/providers.example.json'), join(runtime, 'plugins/filmcraft/config/providers.example.json'));
-await cp(join(here, 'launch.mjs'), join(runtime, 'launch.mjs'));
-run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: runtime });
+await copyRuntime(runtime);
 await cp(join(upstream, 'assets/app-icon/filmcraft.icns'), join(resources, 'FilmCraft.icns'));
-for (const file of ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md']) await cp(join(upstream, file), join(licenses, file));
-await cp(join(upstream, 'assets/app-icon/filmcraft.icns.attribution'), join(licenses, 'FilmCraft-icon.attribution'));
-await cp(join(upstream, 'assets/app-icon/LICENSE.txt'), join(licenses, 'FilmCraft-icon-LICENSE.txt'));
-for (const file of await readdir(join(upstream, 'assets/fonts'))) {
-  if (file.endsWith('.txt') || file.endsWith('.attribution')) await cp(join(upstream, 'assets/fonts', file), join(licenses, file));
-}
-const metadata = JSON.parse(run('cargo', ['metadata', '--locked', '--format-version', '1', '--filter-platform', `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`, '--manifest-path', join(upstream, 'Cargo.toml')], { stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 20 * 1024 * 1024 }));
-const dependencies = await collectRustLicenses(metadata.packages, join(licenses, 'Rust'), join(output, 'notice-cache'));
-await writeFile(join(licenses, 'Rust-dependencies.json'), JSON.stringify(dependencies, null, 2));
+await copyLicenses(upstream, licenses, `${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-apple-darwin`, output, 'icns');
 
 const shortVersion = version.split('-')[0];
 await writeFile(join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>

@@ -9,7 +9,7 @@ on:
         default: arm64
       version:
         description: Preview version
-        default: 0.1.0-preview.1
+        default: 0.1.0-preview.2
         required: true
 permissions:
   contents: read

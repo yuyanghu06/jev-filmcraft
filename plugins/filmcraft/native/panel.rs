@@ -113,7 +113,7 @@ impl ChatPanel {
                 self.load_model();
                 self.key.clear();
                 self.status = if kind == "config" {
-                    if value["saved"].as_bool().unwrap_or(false) { "Settings saved on this Mac" } else { "Settings saved for this session" }
+                    if value["saved"].as_bool().unwrap_or(false) { "Settings saved on this device" } else { "Settings saved for this session" }
                 } else {
                     "Ready"
                 }
@@ -237,7 +237,11 @@ impl ChatPanel {
             ui.add_space(8.0);
             if self.provider == "codex" || self.provider == "claude-code" {
                 ui.label(RichText::new("Connect your coding agent").font(Tokens::semibold(12.0)));
-                ui.label("Paste this command in your terminal, then restart the agent. Keep this FilmCraft window open so it can edit this project.");
+                ui.label(if cfg!(target_os = "windows") {
+                    "Paste this command in PowerShell, then restart the agent. Keep this FilmCraft window open so it can edit this project."
+                } else {
+                    "Paste this command in your terminal, then restart the agent. Keep this FilmCraft window open so it can edit this project."
+                });
                 ui.add_space(8.0);
                 let script = self.installs[&self.provider].as_str().unwrap_or("Connecting to plugin…").to_owned();
                 egui::Frame::new().fill(t.field_bg).stroke(Stroke::new(1.0, t.field_border)).corner_radius(t.radius_sm).inner_margin(8).show(ui, |ui| {
@@ -273,7 +277,7 @@ impl ChatPanel {
                 ui.label(RichText::new("API key").color(t.text_dim));
                 let r = ui.add(egui::TextEdit::singleline(&mut self.key).password(true).desired_width(f32::INFINITY).hint_text("Paste key to replace"));
                 register("chat.key", &r, "API key");
-                let r = ui.checkbox(&mut self.remember, "Save on this Mac");
+                let r = ui.checkbox(&mut self.remember, "Save on this device");
                 register("chat.settings.remember", &r, "Save provider settings on this Mac");
                 ui.horizontal(|ui| {
                     let r = ui.add_enabled(self.pending.is_none() && !self.model.is_empty(), egui::Button::new("Apply"));

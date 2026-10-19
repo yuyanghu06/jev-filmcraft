@@ -16,8 +16,9 @@ import { loadProviderEnvironment } from './config.js';
 export function sessionPath(env: NodeJS.ProcessEnv = process.env) {
   return env.FILMCRAFT_STATE_DIR ? join(resolve(env.FILMCRAFT_STATE_DIR), 'session.json') : join(repository, 'artifacts/chat/session.json');
 }
-const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
-export function installCommands(env: NodeJS.ProcessEnv = process.env) {
+export function installCommands(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform) {
+  // Windows commands are pasted into PowerShell; POSIX shells escape apostrophes differently.
+  const quote = (s: string) => `'${s.replaceAll("'", platform === 'win32' ? "''" : "'\\''")}'`;
   const entry = env.FILMCRAFT_LAUNCHER ?? fileURLToPath(new URL('../cli.js', import.meta.url));
   const command = `${quote(process.execPath)} ${quote(entry)} desktop-mcp`;
   return {
@@ -58,9 +59,13 @@ export async function launchDesktop(options: { env?: NodeJS.ProcessEnv; fetch?: 
   // Distributed builds must keep FilmCraft's recovery prompt after an unexpected exit.
   if (env.FILMCRAFT_PACKAGED !== '1' || options.controlInputOnly) args.push('--no-recover');
   if (options.controlInputOnly) args.push('--control-input-only');
+  if (env.FILMCRAFT_GRAPHICS) {
+    if (!['default', 'dx12', 'software'].includes(env.FILMCRAFT_GRAPHICS)) throw new Error('FILMCRAFT_GRAPHICS must be default, dx12, or software');
+    args.push('--graphics', env.FILMCRAFT_GRAPHICS);
+  }
   if (env.FILMCRAFT_DATA_DIR) args.push('--data-dir', env.FILMCRAFT_DATA_DIR);
   if (!env.FILMCRAFT_PROJECT) args.push('--empty');
-  const desktop = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'], env: { ...env, FILMCRAFT_CHAT_URL: `http://127.0.0.1:${apiPort}`, FILMCRAFT_CHAT_TOKEN: token } });
+  const desktop = spawn(binary, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...env, FILMCRAFT_CHAT_URL: `http://127.0.0.1:${apiPort}`, FILMCRAFT_CHAT_TOKEN: token } });
   let launchError: Error | undefined;
   desktop.on('error', error => { launchError = error; });
   // Native diagnostics can contain project data; keep them local to this process.

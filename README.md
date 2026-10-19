@@ -4,9 +4,14 @@ A separate API/MCP plugin over the real [FilmCraft](https://github.com/storytold
 
 ## Download the app
 
-For Mac Apple Silicon (macOS 13.5+), use the [prebuilt preview](https://github.com/yuyanghu06/jev-filmcraft/releases). Unzip, drag **Jev FilmCraft.app** into Applications, and open it. Node, Rust and a FilmCraft checkout are not needed. Choose a provider in the sidebar, open Settings, paste its API key, and click Apply. **Save on this Mac** remembers it in a private, unencrypted local file outside the app.
+Download a ZIP for your computer from [Releases](https://github.com/yuyanghu06/jev-filmcraft/releases):
 
-The preview is not Apple-notarized, so the first launch may require **System Settings → Privacy & Security → Open Anyway**. See [desktop installation and packaging details](plugins/filmcraft/packaging/README.md). The source setup below remains available for development and MCP-only use.
+- **Mac (Apple Silicon or Intel, macOS 13.5+):** unzip, drag **Jev FilmCraft.app** into Applications, and open it.
+- **Windows (x64, Windows 10/11):** extract the entire **Jev FilmCraft** folder somewhere permanent, then double-click **JevFilmCraft.exe**. Keep its companion folders beside it.
+
+Node, Rust and a FilmCraft checkout are not needed. Choose a provider in the sidebar, open Settings, paste your own API key, and click Apply. **Save on this device** remembers it in a private, unencrypted local file outside the app.
+
+These preview downloads are not notarized on Mac or signed on Windows, so first launch can show an OS security prompt. See [desktop installation and packaging details](plugins/filmcraft/packaging/README.md). The source setup below remains available for development and MCP-only use.
 
 ```text
 Jev / any MCP client
@@ -110,13 +115,13 @@ npm run chat
 
 The file has separate `claude`, `chatgpt`, and `jev` sections, each with `apiKey` and `model`. It is ignored by Git and created with owner-only permissions. Leave keys blank for providers you do not use. A safe [example](plugins/filmcraft/config/providers.example.json) is tracked for new checkouts. `npm run chat:config` preserves an existing file. Restart the chat launcher after editing it. To use another location, set `FILMCRAFT_PROVIDERS_CONFIG=/absolute/path/providers.json`.
 
-Select **Claude**, **ChatGPT**, or **Jev · Experimental** in the sidebar. Settings override its key and model for the current session; check **Save on this Mac** to persist the supplied fields to the local configuration file. This is checked by default in the packaged app and unchecked in source launches. Alternatively set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `TYPESAFE_API_KEY` (`JEV_API_KEY` is an alias) before launching. Model overrides: `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `JEV_MODEL`. Environment variables override file settings, even when a key is explicitly empty. These are direct provider APIs; a consumer chat subscription is not an API credential.
+Select **Claude**, **ChatGPT**, or **Jev · Experimental** in the sidebar. Settings override its key and model for the current session; check **Save on this device** to persist the supplied fields to the local configuration file. This is checked by default in the packaged app and unchecked in source launches. Alternatively set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `TYPESAFE_API_KEY` (`JEV_API_KEY` is an alias) before launching. Model overrides: `ANTHROPIC_MODEL`, `OPENAI_MODEL`, `JEV_MODEL`. Environment variables override file settings, even when a key is explicitly empty. These are direct provider APIs; a consumer chat subscription is not an API credential.
 
-**Codex** and **Claude Code** are also in the picker. They display a copyable MCP install command, which attaches the coding agent to this same live project. Installation is never executed automatically. Keep `npm run chat` running, paste the command into a terminal, and restart the agent. The installed stdio connector reads a mode-0600, ignored session file rather than putting the local bearer token into the install command. It reconnects to the next desktop session when restarted.
+**Codex** and **Claude Code** are also in the picker. They display a copyable MCP install command, which attaches the coding agent to this same live project. Installation is never executed automatically. Keep `npm run chat` running, paste the command into PowerShell on Windows or a terminal on Mac, and restart the agent. The installed stdio connector reads a mode-0600, ignored session file rather than putting the local bearer token into the install command. It reconnects to the next desktop session when restarted.
 
 Jev uses the [TypeSafe System One API](https://docs.typesafe.ai/api), with **`TypeSafe-Danger-Zone-Images: true`** on every request and a desktop screenshot as visual context. It selects tools and grounded argument candidates using Choice questions. It does not generate chat prose or arbitrary JSON: quote title/caption text, supply numeric values, and put complex arguments in a JSON code block. The harness stops for missing or low-confidence decisions. No other model is used as a fallback. See the [Jev image protocol](https://docs.typesafe.ai/images) and [function calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
 
-The sidebar calls the same MCP → HTTP → FilmCraft pipeline as external agents. Tool activity is visible, Stop prevents subsequent calls (completed edits remain), and FilmCraft Undo reverts edits. Provider switching starts a fresh conversation. The chosen provider receives your messages, project context, tool results and requested preview images. Chat history stays in memory. Keys saved with **Save on this Mac**, or entered in the local configuration file, are loaded on startup. The **API key configured** label indicates presence, not successful authentication.
+The sidebar calls the same MCP → HTTP → FilmCraft pipeline as external agents. Tool activity is visible, Stop prevents subsequent calls (completed edits remain), and FilmCraft Undo reverts edits. Provider switching starts a fresh conversation. The chosen provider receives your messages, project context, tool results and requested preview images. Chat history stays in memory. Keys saved with **Save on this device**, or entered in the local configuration file, are loaded on startup. The **API key configured** label indicates presence, not successful authentication.
 
 `FILMCRAFT_PROJECT=/absolute/path/edit.fcproj npm run chat` opens an existing project. The normal launcher accepts keyboard and mouse input; automation-only input is enabled exclusively by the UI test harness.
 

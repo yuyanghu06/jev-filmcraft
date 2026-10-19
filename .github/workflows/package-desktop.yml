@@ -1,0 +1,62 @@
+name: Build desktop previews
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Preview version
+        default: 0.1.0-preview.2
+        required: true
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            platform: windows-x64
+            command: package:windows
+          - runner: macos-15-intel
+            platform: macos-x64
+            command: package:mac
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      JEV_FILMCRAFT_VERSION: ${{ inputs.version }}
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.0
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vendor/filmcraft
+          key: desktop-${{ matrix.platform }}
+          cache-on-failure: true
+      - run: npm ci
+      - run: npm run check
+      - run: npm run ${{ matrix.command }}
+      - name: Test extracted app and bundled MCP
+        run: npm run test:package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jev-filmcraft-${{ matrix.platform }}
+          path: |
+            artifacts/releases/jev-filmcraft-*.zip
+            artifacts/releases/jev-filmcraft-*.sha256
+            artifacts/releases/jev-filmcraft-*.build.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ matrix.platform }}
+          path: artifacts/releases/verification
+          if-no-files-found: ignore
