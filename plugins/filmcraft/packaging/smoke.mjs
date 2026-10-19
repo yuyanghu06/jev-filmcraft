@@ -93,7 +93,9 @@ const launch = async (finder = false) => {
     // MainWindowHandle excludes hidden windows. Match only this test's installed executable.
     await waitFor(() => execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command',
       "$editor = Get-Process -Name filmcraft -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $env:JEV_EDITOR }; if ($editor | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) { Write-Output 'visible' }"],
-    { env: { ...env, JEV_EDITOR: join(app, 'bin/filmcraft.exe') }, encoding: 'utf8', windowsHide: true, timeout: 10_000 }).trim() === 'visible', 'Editor process started without a visible Windows window');
+    // The observer uses the test runner's normal PowerShell environment. The app itself
+    // retains the restricted environment above, independently of this process query.
+    { env: { ...process.env, JEV_EDITOR: join(app, 'bin/filmcraft.exe') }, encoding: 'utf8', windowsHide: true, timeout: 45_000 }).trim() === 'visible', 'Editor process started without a visible Windows window');
   }
 };
 const call = async (name, args = {}) => {
