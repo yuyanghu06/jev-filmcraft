@@ -1,0 +1,111 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { NativeBackend } from '../../src/adapters/native.js';
+import { nativeOptions } from '../../src/config.js';
+import { FilmcraftService } from '../../src/api/service.js';
+import { startApi } from '../../src/api/server.js';
+import { resultData } from '../../src/core.js';
+
+/** Real native PCM, API, MCP, and edit verification; inference responses are deterministic test doubles. */
+test('native timeline WAV -> MCP audio helper -> structured Jev plan -> verified native cut', { timeout: 30_000 }, async t => {
+  const directory = await mkdtemp('/tmp/filmcraft-source-audio-integration-');
+  const sampleRate = 48000;
+  const pcm = Buffer.alloc(sampleRate * 2 * 2);
+  for (let frame = 0; frame < sampleRate; frame++) pcm.writeInt16LE(Math.round(12000 * Math.sin(2 * Math.PI * 440 * frame / sampleRate)), frame * 2);
+  const header = Buffer.alloc(44);
+  header.write('RIFF'); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVEfmt ', 8); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write('data', 36); header.writeUInt32LE(pcm.length, 40);
+  const fixturePath = join(directory, 'one-second-tone-then-silence.wav');
+  await writeFile(fixturePath, Buffer.concat([header, pcm]));
+  const backend = await NativeBackend.connect({ ...nativeOptions(), mode: 'headless', demo: false, project: undefined, dataDir: join(directory, 'prefs') });
+  let helperCalls = 0, jevCalls = 0;
+  let expectedSourceWav: string | undefined;
+  const service = new FilmcraftService(backend, { env: { FILMCRAFT_AUDIO_API_KEY: 'isolated-audio-test', TYPESAFE_API_KEY: 'isolated-jev-test' }, fetch: async (url, options) => {
+    const body = JSON.parse(String(options?.body));
+    if (url === 'https://api.openai.com/v1/chat/completions') {
+      helperCalls++;
+      const input = body.messages[1].content.find((c: any) => c.type === 'input_audio').input_audio;
+      assert.equal(input.format, 'wav');
+      const wav = Buffer.from(input.data, 'base64');
+      assert.equal(wav.toString('ascii', 0, 4), 'RIFF'); assert.equal(wav.readUInt32LE(24), 16000);
+      const provenance = body.messages[1].content[0].text;
+      if (provenance.includes('source_original')) {
+        assert.equal(input.data, expectedSourceWav, 'Helper receives the exact native source WAV');
+        assert.match(provenance, /"startSeconds":0.5/);
+        assert.match(body.messages[0].content, /absolute source-media seconds/);
+        assert(!body.messages[0].content.includes('absolute timeline'));
+        assert.equal(wav.length, 44 + 24000 * 2);
+        assert(wav.subarray(44, 44 + 4000).some(byte => byte !== 0));
+        assert(wav.subarray(44 + 16000 * 2).every(byte => byte === 0));
+        return Response.json({ choices: [{ message: { content: 'Source fixture: tone ends at excerpt +0.5 s, absolute source 1.0 s.' } }] });
+      }
+      assert(wav.subarray(44, 44 + 10000).some(byte => byte !== 0), 'Native excerpt must contain actual audible tone samples');
+      assert(wav.subarray(44 + 16000 * 3).every(byte => byte === 0), 'Native excerpt must preserve the known silent tail');
+      return Response.json({ choices: [{ message: { content: 'Test fixture observation: tone ends at absolute 1.0 seconds, followed by silence.' } }] });
+    }
+    assert.equal(url, 'https://api.typesafe.ai/v1/systemone');
+    jevCalls++;
+    assert.equal(body.assets, undefined); assert.equal(body.state.image, undefined);
+    assert.equal(body.state.step.atFrame, 24);
+    return Response.json({ answers: { action: { type: 'choice', choice: 'execute', confidence: 0.99, probabilities: { execute: 1, stop: 0 } } } });
+  } });
+  const token = 'isolated-audio-plan-api-token-0123456789';
+  const api = await startApi(service, { token, port: 0 });
+  const client = new Client({ name: 'native-audio-plan-test', version: '1' });
+  t.after(async () => { await client.close(); await api.close(); await backend.close(); await rm(directory, { recursive: true, force: true }); });
+  await client.connect(new StreamableHTTPClientTransport(new URL(api.url + '/mcp'), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const result = await client.callTool({ name, arguments: args });
+    assert(!result.isError, `${name}: ${JSON.stringify(result.content)}`);
+    return result;
+  };
+  const names = (await client.listTools()).tools.map(tool => tool.name);
+  for (const name of ['filmcraft_audio_read', 'filmcraft_audio_analyze', 'filmcraft_execute_plan']) assert(names.includes(name));
+  await call('filmcraft_project_new', { name: 'Audio plan integration' });
+  const imported = resultData(await call('filmcraft_media_import', { paths: [fixturePath] })) as any;
+  assert.equal(imported.errors.length, 0);
+  const importedItem = imported.items[0];
+  const unplaced = resultData(await call('filmcraft_inspect')) as any;
+  const initialState = resultData(await call('filmcraft_execute', { id: 'state.inspect', params: {} }));
+  const initialHistory = resultData(await call('filmcraft_execute', { id: 'history.list', params: {} }));
+  assert.equal((initialState as any).active_sequence, null);
+  assert.equal((initialState as any).source_item, null);
+  const sourceAudio = await call('filmcraft_audio_read', { item: importedItem, startSeconds: 0.5, durationSeconds: 2 });
+  const sourceMetadata = resultData(sourceAudio) as any;
+  expectedSourceWav = (sourceAudio.content.find(c => c.type === 'audio') as any).data;
+  assert.equal(sourceMetadata.timeBasis, 'source'); assert.equal(sourceMetadata.source.item, importedItem);
+  assert.equal(sourceMetadata.source.durationSeconds, 2); assert.equal(sourceMetadata.audioStream.index, 0);
+  assert.equal(sourceMetadata.actualRange.startSeconds, 0.5); assert.equal(sourceMetadata.actualRange.endSeconds, 2);
+  assert.equal(sourceMetadata.availableAudioStreams[0].sampleRate, 48000);
+  assert.equal(sourceMetadata.mediaStatus.proxyUsed, false);
+  assert.equal(sourceMetadata.sequence, undefined); assert.equal(sourceMetadata.frameCount, 24000);
+  const sourceObservation = resultData(await call('filmcraft_audio_analyze', { item: importedItem, audioStream: 0, startSeconds: 0.5, durationSeconds: 2, question: 'Locate the tone ending before placement.' })) as any;
+  assert.equal(sourceObservation.source, 'audio-model'); assert.equal(sourceObservation.metadata.source.item, importedItem);
+  assert.match(sourceObservation.observation, /absolute source 1.0/);
+  assert.deepEqual(resultData(await call('filmcraft_inspect')), unplaced, 'Source reads/analyze preserve unplaced project');
+  assert.deepEqual(resultData(await call('filmcraft_execute', { id: 'state.inspect', params: {} })), initialState);
+  assert.deepEqual(resultData(await call('filmcraft_execute', { id: 'history.list', params: {} })), initialHistory);
+  const invalidStream = await client.callTool({ name: 'filmcraft_audio_read', arguments: { item: importedItem, audioStream: 1, startSeconds: 0, durationSeconds: 1 } });
+  assert(invalidStream.isError); assert.match(JSON.stringify(invalidStream.content), /audioStream/);
+  const created = resultData(await call('filmcraft_sequence_create', { name: 'Tone and silence', fps: 24, video: 1, audio: 1 })) as any;
+  await call('filmcraft_clip_place', { item: imported.items[0], track: 'A1', seconds: 0, duration: 2 * 254016000000, video: false });
+  const before = resultData(await call('filmcraft_inspect')) as any;
+  const audio = await call('filmcraft_audio_read', { startSeconds: 0, durationSeconds: 2, track: 'A1' });
+  assert(audio.content.some(c => c.type === 'audio'));
+  const metadata = resultData(audio) as any;
+  assert.equal(metadata.sequence.id, created.sequence); assert.equal(metadata.track.label, 'A1'); assert.equal(metadata.signalPath, 'track_input_pre_mixer'); assert.equal(metadata.frameCount, 32000);
+  assert.deepEqual(resultData(await call('filmcraft_inspect')), before, 'Audio reads preserve timeline/selection/playhead');
+  const observation = resultData(await call('filmcraft_audio_analyze', { startSeconds: 0, durationSeconds: 2, track: 'A1', question: 'Locate the tone ending for the cut.' })) as any;
+  assert.equal(observation.source, 'audio-model'); assert.match(observation.observation, /1.0 seconds/);
+  const clip = before.sequence.audio[0].items[0];
+  const executed = resultData(await call('filmcraft_execute_plan', { plan: { version: 1, objective: 'Cut at the observed tone-to-silence boundary', sequence: created.sequence,
+    steps: [{ id: 'tone-end', operation: 'split', target: { clip: clip.clip, track: 'A1', startFrame: clip.startFrame, durationFrames: clip.durationFrames }, atFrame: 24, outcome: 'Separate the audible first second from the silent second' }] } })) as any;
+  assert.equal(executed.status, 'verified'); assert(executed.steps[0].operations[0].verification.passed);
+  assert.equal(executed.refreshedClipIds.length, 2);
+  const after = resultData(await call('filmcraft_inspect')) as any;
+  assert.deepEqual(after.sequence.audio[0].items.map((c: any) => [c.startFrame, c.durationFrames]), [[0, 24], [24, 24]]);
+  assert.equal(helperCalls, 2); assert.equal(jevCalls, 1);
+});

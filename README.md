@@ -1,6 +1,6 @@
 # Jev × FilmCraft
 
-A separate API/MCP plugin over the real [FilmCraft](https://github.com/storytold/filmcraft) editing engine. Jev can inspect a project, import media, edit a timeline, render a preview and export video using MCP alone.
+A separate API/MCP plugin over the real [FilmCraft](https://github.com/storytold/filmcraft) editing engine. Claude, ChatGPT and external MCP agents can inspect images, listen to imported and timeline audio, plan edits and optionally ask Jev to execute their editing plans.
 
 ## Download the app
 
@@ -25,7 +25,7 @@ plugins/filmcraft/src/adapters
 vendor/filmcraft ── headless engine OR live desktop bridge
 ```
 
-FilmCraft is a Git submodule pinned to `105c09bd80e2c86ec7464a2c59a2501eb89ffc5c` (0.9.0). It already provides a native command channel and basic MCP server. This plugin adds an authenticated HTTP API, 50 named tools for headless use (54 in desktop mode), shared schemas/OpenAPI, lifecycle management, and an optional embedded chat panel. A reproducible 11-line upstream hook loads the sidebar from the plugin folder. All **701 native engine commands** at the pinned revision are accessible through command discovery/execution, including features without a dedicated named tool. Command availability still depends on native build features and current project state.
+FilmCraft is a Git submodule pinned to `105c09bd80e2c86ec7464a2c59a2501eb89ffc5c` (0.9.0). It already provides a native command channel and basic MCP server. This plugin adds an authenticated HTTP API, named tools, shared schemas/OpenAPI, lifecycle management, and an optional embedded chat panel. Reproducible hooks load the sidebar and read-only source and timeline audio tools from the plugin folder. The full native command registry is accessible through command discovery/execution, including features without a dedicated named tool. Command availability still depends on native build features and current project state.
 
 ## Run
 
@@ -95,6 +95,14 @@ npm run api
 Connect Jev to `http://127.0.0.1:8765/mcp` using `Authorization: Bearer <the token>`. This is stateless Streamable HTTP transport over a **shared, stateful editing session**. The token is required on every request. An SSH tunnel or authenticated TLS reverse proxy is needed if Jev runs elsewhere; the service intentionally binds only to loopback.
 
 ## Edit in the FilmCraft window
+
+Preview 4 and source builds offer Claude and ChatGPT **Execute edits → Jev**. The selected LLM interprets images/audio and decides where to cut; Jev receives its structured editing plan and executes verified split, trim, range-removal and move steps. **Direct tools** remains the default, and standalone experimental Jev remains available. Jev execution needs a separate `TYPESAFE_API_KEY` or `JEV_API_KEY`; it receives timeline state and the plan without image/audio attachments. Stale or failed steps stop with partial results; completed edits remain applied.
+
+Track listening uses an additional OpenAI audio model for every planner, including Claude. Open Settings to configure **Audio analysis · OpenAI**, or set `FILMCRAFT_AUDIO_API_KEY` / `FILMCRAFT_AUDIO_MODEL` (default `gpt-audio-1.5`). A configured OpenAI key is used when there is no dedicated audio key. Readiness shows the helper model and key source. `filmcraft_audio_read` returns up to 30 seconds of actual timeline audio as mono PCM16 WAV, while `filmcraft_audio_analyze` returns attributed listening observations. Omitting the track reads the full sequence mix; specifying `A1` or its numeric ID reads clip processing before the track mixer, bypassing track mute/solo/fader/routing. The range, track, signal path and offline media are reported without moving the playhead or changing the project.
+
+Imported tracks can be heard before adding them to a timeline: discover their media item IDs with `filmcraft_inspect` (bin) or `filmcraft_media_import`, then call `filmcraft_audio_read({"item":123,"startSeconds":2,"durationSeconds":10})` or `filmcraft_audio_analyze` with those fields. This reads original audio from audio files or video files without an active sequence, source monitor, or clip placement. Optional `audioStream` selects a zero-based stream (default 0). `item` and timeline `track` are mutually exclusive; `audioStream` requires `item`. Returned source identity, duration, stream metadata, requested/actual source range and offline-original status keep source seconds distinct from timeline positions. Proxies are never used for imported-item audio. Preview 4 includes this native support; source users must rebuild CLI/desktop executables.
+
+External Codex and Claude Code clients can use these same tools through desktop or headless MCP connections: inspect the timeline, read images and audio, then call `filmcraft_execute_plan` with a version 1 plan. See [plan schema and external-agent examples](plugins/filmcraft/README.md#llm-planning-and-jev-execution). Audio analysis and Jev plan execution work through desktop and headless API/MCP services with configured provider credentials. Built-in chat routes require the desktop chat launcher. Preview 4 includes these tools and the planner/executor controls. Rebuild executables when using the source checkout.
 
 For development and live provider testing, use `npm run dev`. This rebuilds the plugin and native debug executable and launches directly from the checkout. Its settings, session file, editor data and debug logs live under the Git-ignored `artifacts/dev` directory, separate from the installed app. Configure the provider in the sidebar and enable **Debug logging** when testing. `FILMCRAFT_PROJECT=/absolute/path/test.fcproj npm run dev` opens a test project. Close the dev window before rebuilding/restarting it. The installed preview is not updated by this command.
 

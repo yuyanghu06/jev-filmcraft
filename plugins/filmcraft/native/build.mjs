@@ -10,5 +10,5 @@ function run(command, args) {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
-if (target === 'desktop') run(process.execPath, [fileURLToPath(new URL('./apply.mjs', import.meta.url)), filmcraft]);
+run(process.execPath, [fileURLToPath(new URL('./apply.mjs', import.meta.url)), filmcraft, ...(target === 'cli' ? ['--audio-only'] : [])]);
 run('cargo', ['build', '--locked', '--manifest-path', join(filmcraft, 'Cargo.toml'), '-p', target === 'desktop' ? 'filmcraft' : 'filmcraft-cli']);

@@ -1,8 +1,9 @@
 // Real desktop + MCP + engine. Provider replies are fixtures; no cloud credentials or charges.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { launchDesktop, installCommands } from '../dist/chat/desktop.js';
 import { repository } from '../dist/config.js';
@@ -11,10 +12,18 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const scratch = await mkdtemp(join(tmpdir(), 'filmcraft-chat-ui-'));
+const { values: options } = parseArgs({ options: { out: { type: 'string' }, project: { type: 'string' } } });
 const providerConfig = join(scratch, 'providers.json');
 await writeFile(providerConfig, '{}');
-const out = join(repository, 'artifacts/chat');
+const out = options.out || process.env.FILMCRAFT_UI_OUTPUT_DIR
+  ? resolve(options.out || process.env.FILMCRAFT_UI_OUTPUT_DIR)
+  : await mkdtemp(join(tmpdir(), 'filmcraft-chat-ui-output-'));
 await mkdir(out, { recursive: true });
+// User-supplied fixtures are copied before opening. No existing desktop session or demo is edited.
+const sourceProject = options.project || process.env.FILMCRAFT_UI_PROJECT;
+const project = sourceProject ? join(scratch, 'fixture.fcproj') : undefined;
+if (sourceProject) await copyFile(resolve(sourceProject), project);
+const smokeEnv = { ...process.env, ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', TYPESAFE_API_KEY: '', JEV_API_KEY: '', FILMCRAFT_AUDIO_API_KEY: '', FILMCRAFT_PROVIDERS_CONFIG: providerConfig, FILMCRAFT_STATE_DIR: scratch, FILMCRAFT_DATA_DIR: scratch, FILMCRAFT_PROJECT: project };
 const decision = (criteria, choice) => ({ type: 'choice', choice, confidence: 0.98, probabilities: Object.fromEntries(Object.keys(criteria).map(k => [k, k === choice ? 1 : 0])) });
 let action = 0;
 let requests = 0;
@@ -37,7 +46,7 @@ const mock = async (url, options) => {
   }
   return Response.json({ model: 'jev-latest', answers });
 };
-const app = await launchDesktop({ env: { ...process.env, ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', TYPESAFE_API_KEY: '', JEV_API_KEY: '', FILMCRAFT_PROVIDERS_CONFIG: providerConfig, FILMCRAFT_DATA_DIR: scratch, FILMCRAFT_PROJECT: join(repository, 'artifacts/demo/edit.fcproj') }, fetch: mock, controlInputOnly: true });
+const app = await launchDesktop({ env: smokeEnv, fetch: mock, controlInputOnly: true });
 const call = async (name, args = {}) => {
   const result = await app.client.callTool(`filmcraft_${name}`, args);
   assert(!result.isError, JSON.stringify(result));
@@ -60,6 +69,7 @@ const select = async id => {
   await waitFor(s => s.provider === id);
 };
 try {
+  if (!project) await call('execute', { id: 'file.openDemoProject', params: {} });
   await waitFor(s => s.status === 'Ready');
   await call('playhead_set', { seconds: 0.5 });
   await control('ui.set', { timeline: { fit: true } });
@@ -99,7 +109,7 @@ try {
   assert.match(JSON.stringify(resultData(await call('sequence_inspect'))), /Jev UI test/);
   const external = new Client({ name: 'external-agent-install-test', version: '0.1.0' });
   try {
-    await external.connect(new StdioClientTransport({ command: process.execPath, args: [join(repository, 'plugins/filmcraft/dist/cli.js'), 'desktop-mcp'], stderr: 'inherit' }));
+    await external.connect(new StdioClientTransport({ command: process.execPath, args: [join(repository, 'plugins/filmcraft/dist/cli.js'), 'desktop-mcp'], env: Object.fromEntries(Object.entries(smokeEnv).filter(([, value]) => value !== undefined)), stderr: 'inherit' }));
     const shared = await external.callTool({ name: 'filmcraft_sequence_inspect', arguments: {} });
     assert.match(JSON.stringify(shared), /Jev UI test/, 'Installed external connector must share the sidebar project');
   } finally { await external.close(); }
@@ -120,13 +130,31 @@ try {
   await select('claude-code');
   await screenshot('claude-code-install');
   await select('chatgpt');
+  assert.equal((await control('chat.inspect')).audio.configured, false);
+  await click('chat.execution');
+  await click('chat.execution.jev');
+  await waitFor(s => s.execution === 'jev');
+  await screenshot('chatgpt-jev-executor');
+  await click('chat.execution');
+  await click('chat.execution.direct');
+  await waitFor(s => s.execution === 'direct');
   await screenshot('chatgpt');
+  await click('chat.settings');
+  await control('ui.scroll', { id: 'chat.model', dy: -500 });
+  await delay(200);
+  await click('chat.audio.key');
+  await control('ui.type', { text: 'audio-fixture-only-not-a-real-api-key' });
+  await screenshot('audio-helper-settings');
+  await click('chat.audio.apply');
+  await waitFor(s => s.audio.configured === true);
+  assert.equal((await control('chat.inspect')).audio.provider, 'openai');
+  await click('chat.settings');
   await click('chat.close');
   await waitFor(s => !s.open);
   await click('chat.open');
   await waitFor(s => s.open);
-  await writeFile(join(out, 'ui-report.json'), JSON.stringify({ providerResponses: 'deterministic fixtures, not live cloud inference', actualEngineEdit: 'Jev UI test marker at 1 second', requests, screenshotFiles: ['chat-default', 'provider-picker', 'jev-settings', 'jev-tool-run', 'chat-theme-dark', 'chat-theme-medium', 'chat-theme-light', 'chat-settings-light', 'codex-install', 'claude-code-install', 'chatgpt'], installCommands: installCommands() }, null, 2));
-  console.log('Chat UI passed: five options, key settings, composer, Jev decision/image requests, real MCP edit, install copy, collapse/restore, screenshots. Cloud inference was stubbed.');
+  await writeFile(join(out, 'ui-report.json'), JSON.stringify({ providerResponses: 'deterministic fixtures, not live cloud inference', actualEngineEdit: 'Jev UI test marker at 1 second', requests, screenshotFiles: ['chat-default', 'provider-picker', 'jev-settings', 'jev-tool-run', 'chat-theme-dark', 'chat-theme-medium', 'chat-theme-light', 'chat-settings-light', 'codex-install', 'claude-code-install', 'chatgpt', 'chatgpt-jev-executor', 'audio-helper-settings'], installCommands: installCommands(smokeEnv) }, null, 2));
+  console.log(`Chat UI passed: five options, executor selection, key settings, composer, Jev decision/image requests, real MCP edit, install copy, collapse/restore. Cloud inference was stubbed. Output: ${out}`);
 } finally {
   await app.close();
   await delay(500);

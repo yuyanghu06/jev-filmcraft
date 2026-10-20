@@ -10,5 +10,9 @@
   "jev": {
     "apiKey": "",
     "model": "jev-latest"
+  },
+  "audio": {
+    "apiKey": "",
+    "model": "gpt-audio-1.5"
   }
 }

@@ -104,3 +104,23 @@ test('failed settings saves preserve the file and the current session configurat
   assert.equal((await readFile(env.FILMCRAFT_PROVIDERS_CONFIG, 'utf8')), '{"broken":"fixture-secret"');
   assert.equal(service.providers().providers.find(p => p.id === 'jev')?.configured, false);
 });
+
+test('dedicated Audio settings persist independently, honor env priority, and fall back to the saved OpenAI key', async t => {
+  const env = await configFile(t);
+  await initProviderConfig(env);
+  const service = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', env);
+  await service.configure({ provider: 'chatgpt', apiKey: 'saved-openai', persist: true });
+  await service.configure({ provider: 'audio', apiKey: 'saved-audio', model: 'audio-configured', persist: true });
+  const loaded = await loadProviderEnvironment(env);
+  assert.equal(loaded.FILMCRAFT_AUDIO_API_KEY, 'saved-audio');
+  assert.equal(loaded.FILMCRAFT_AUDIO_MODEL, 'audio-configured');
+  const readiness = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', loaded).providers().audio;
+  assert.deepEqual(readiness, { provider: 'openai', model: 'audio-configured', configured: true, keySource: 'settings' });
+  const overridden = await loadProviderEnvironment({ ...env, FILMCRAFT_AUDIO_API_KEY: 'env-audio', FILMCRAFT_AUDIO_MODEL: 'env-model' });
+  assert.equal(overridden.FILMCRAFT_AUDIO_API_KEY, 'env-audio'); assert.equal(overridden.FILMCRAFT_AUDIO_MODEL, 'env-model');
+  assert.equal(overridden.FILMCRAFT_AUDIO_KEY_SOURCE, 'environment');
+  await service.configure({ provider: 'audio', apiKey: '', persist: true });
+  const fallback = new ChatService('http://127.0.0.1:9999', 'unused-private-token-123456789', await loadProviderEnvironment(env)).providers().audio;
+  assert.equal(fallback.configured, true); assert.equal(fallback.keySource, 'openai');
+  assert(!JSON.stringify(fallback).includes('saved-openai'));
+});

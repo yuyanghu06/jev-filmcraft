@@ -11,14 +11,15 @@ export class FilmcraftApiClient {
     if (token.length < 24) throw new PluginError('CONFIG', 'An API token of at least 24 characters is required', 400);
   }
 
-  private async request(route: string, args?: Params): Promise<unknown> {
+  private async request(route: string, args?: Params, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     let response: Response;
     try {
       response = await fetch(`${this.url.replace(/\/$/, '')}${route}`, {
         method: args ? 'POST' : 'GET',
         headers: { Authorization: `Bearer ${this.token}`, ...(args ? { 'Content-Type': 'application/json' } : {}) },
         body: args ? JSON.stringify(args) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs),
         redirect: 'error',
       });
     } catch (error) {
@@ -33,8 +34,8 @@ export class FilmcraftApiClient {
 
   async health() { return this.request('/v1/health') as Promise<{ connected: boolean; mode: 'headless' | 'bridge'; version: string }>; }
   async listTools() { return ListToolsResultSchema.parse(await this.request('/v1/tools')).tools; }
-  async callTool(name: string, args: Params = {}) {
-    const data = await this.request(`/v1/tools/${encodeURIComponent(name)}`, args) as { result: unknown };
+  async callTool(name: string, args: Params = {}, options: { signal?: AbortSignal } = {}) {
+    const data = await this.request(`/v1/tools/${encodeURIComponent(name)}`, args, options.signal) as { result: unknown };
     return CallToolResultSchema.parse(data.result);
   }
 }

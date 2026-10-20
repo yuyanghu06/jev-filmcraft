@@ -11,11 +11,17 @@ Get the matching ZIP from [Releases](https://github.com/yuyanghu06/jev-filmcraft
 | Mac with Apple Silicon, macOS 13.5+ | `macos-arm64.zip` | Unzip, drag **Jev FilmCraft.app** into Applications, then open it. |
 | Windows 10/11, Intel or AMD x64 | `windows-x64.zip` | Extract the entire **Jev FilmCraft** folder to a permanent location, then double-click **JevFilmCraft.exe**. |
 
-Intel Mac build tooling is included, but Preview 2 does not ship an Intel download: the automated Finder restart check has not passed.
+Intel Mac build tooling is included, but Preview 4 does not ship an Intel download: the automated Finder restart check has not passed.
 
 On Windows, keep `bin`, `node`, `runtime` and `Licenses` beside the launcher. Create a shortcut to the launcher if desired. Do not run it inside the ZIP. It uses the .NET Framework included with Windows; no developer tools are required. Windows ARM is not a native target of this preview.
 
 The Mac preview is ad-hoc signed and **not Apple-notarized**. If macOS blocks first launch, use **System Settings → Privacy & Security → Open Anyway** after attempting to open it. See [Apple's instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac). The Windows preview is **unsigned**; SmartScreen may show **More info → Run anyway**. Follow your organization's policy if that choice is unavailable. Do not disable OS security globally.
+
+## Planning, listening, and saved settings
+
+Preview 4 includes **Direct tools / Jev** execution for Claude and ChatGPT. The LLM interprets images and audio, decides the edits, and can send a structured plan to Jev for verified execution. Standalone experimental Jev remains available. Jev execution requires its own API key; completed edits remain if a later step fails.
+
+Bundled MCP exposes `filmcraft_audio_read`, `filmcraft_audio_analyze`, and `filmcraft_execute_plan`. Read imported audio or video audio by `item` before timeline placement, optionally selecting `audioStream`; ranges and provenance use source seconds. Omit `item` to read a timeline mix or selected audio track. Raw reads return PCM16 WAV without changing editor state. Audio analysis uses the configurable **Audio analysis · OpenAI** helper (default `gpt-audio-1.5`), with a dedicated key or configured OpenAI fallback. Claude and ChatGPT remain responsible for editing decisions.
 
 ## Providers and saved settings
 
@@ -56,12 +62,12 @@ npm run package:windows
 npm run test:package
 ```
 
-Both builders require Node 22+. `JEV_FILMCRAFT_VERSION` sets the release version; the test reads the same variable. `FILMCRAFT_DIR` selects an existing upstream checkout. The build applies the sidebar hook and `distribution.patch`, which removes the restricted upstream wordmark artwork, identifies this community build in About, and directs issue reports here. Downloads include upstream licenses, font/icon attributions, dependency notices, and no user keys or generated media. Windows Rust binaries use a static C runtime.
+Both builders require Node 22+. `JEV_FILMCRAFT_VERSION` sets the release version; the test reads the same variable. `FILMCRAFT_DIR` selects an existing upstream checkout. The build applies the sidebar and native audio hooks and `distribution.patch`, which removes the restricted upstream wordmark artwork, identifies this community build in About, and directs issue reports here. Downloads include upstream licenses, font/icon attributions, dependency notices, and no user keys or generated media. Windows Rust binaries use a static C runtime.
 
 Outputs are under `artifacts/releases`: ZIP, SHA-256 checksum, build metadata, and staging files. `--skip-build` skips only Cargo compilation; use it only with matching current native release binaries. Mac compilation uses `MACOSX_DEPLOYMENT_TARGET=13.5`; Windows uses `x86_64-pc-windows-msvc` with static CRT.
 
 The **Build desktop previews** GitHub workflow builds Windows x64 and Intel Mac, then tests each extracted package. It retains built packages for debugging even when a test fails; an uploaded artifact alone does not mean validation passed. **Build macOS preview** builds either Mac architecture on demand. Workflows do not publish automatically; inspect their reports before creating a release. The Apple Silicon package can also be tested locally on a Mac.
 
-`test:package` extracts to a directory with spaces and an apostrophe, then launches the native app with only operating-system directories on PATH. It runs bundled MCP, performs real timeline editing/render/export, enters a dummy key in the sidebar, restarts to verify persistence, checks clean shutdown, and verifies the installed app is unchanged (codesign on Mac, file hashes on Windows). Mac restart uses Launch Services. Windows CI selects FilmCraft's software renderer through `FILMCRAFT_GRAPHICS=software`; normal launches use the editor's default renderer and fallback logic. The **Verify existing desktop package** workflow can recheck an immutable package artifact without rebuilding the editor, including confirming a visible Windows window. Reports and screenshots are under `artifacts/releases/verification`. No live model is called.
+`test:package` extracts to a directory with spaces and an apostrophe, then launches the native app with only operating-system directories on PATH. It checks the complete current desktop tool set, reads a nonzero audio range from an imported item before placement, verifies source WAV/provenance and unchanged editor state, reads timeline audio, performs real timeline editing/render/export, enters a dummy key in the sidebar, restarts to verify persistence, checks clean shutdown, and verifies the installed app is unchanged (codesign on Mac, file hashes on Windows). Mac restart uses Launch Services. Windows CI selects FilmCraft's software renderer through `FILMCRAFT_GRAPHICS=software`; normal launches use the editor's default renderer and fallback logic. The **Verify existing desktop package** workflow can recheck an immutable package artifact without rebuilding the editor, including confirming a visible Windows window. Reports and screenshots are under `artifacts/releases/verification`. No live model is called.
 
 `MACOS_SIGN_IDENTITY` can select a builder-supplied identity, but the script does not notarize. Windows packaging currently ships unsigned executables. A public release without these prompts needs owner-supplied platform signing credentials and Mac notarization.

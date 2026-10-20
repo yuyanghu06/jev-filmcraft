@@ -194,3 +194,219 @@ test('Jev refuses malformed/uncertain decisions; candidates keep explicit litera
   assert.deepEqual(candidates({ type: 'object' }, 'props', '```json\n{"props":{"opacity":0.5}}\n```', []), [{ opacity: 0.5 }]);
   assert.deepEqual(candidates({ type: 'string', pattern: '^/' }, 'path', 'save somewhere', []), []);
 });
+
+for (const provider of ['claude', 'chatgpt'] as const) test(`${provider} Jev mode plans from real WAV helper observations and delegates exact cuts to Jev`, async t => {
+  let round = 0;
+  let jevCalls = 0;
+  let audioCalls = 0;
+  let edits = 0;
+  let clips: any[] = [{ clip: 1, item: 7, startFrame: 0, durationFrames: 240, start: 0 }];
+  const target = { clip: 1, track: 'V1', startFrame: 0, durationFrames: 240 };
+  const plan = { version: 1, objective: 'Cut at the heard sentence boundary', sequence: 10, steps: [{ id: 'sentence', operation: 'split', target, atFrame: 48, outcome: 'Cut at the audio-model sentence boundary at absolute 2 seconds' }] };
+  const backend: Backend = { mode: 'headless', connected: true, close: async () => {}, call: async (tool, args) => {
+    if (tool === 'doc_inspect') return textResult({ project: { activeSequence: 10 }, sequence: { id: 10, settings: { frame_rate: { num: 24, den: 1 } }, video: [{ id: 20, items: clips }], audio: [] } });
+    if (args.id === 'audio.read') return textResult({ encoding: 'base64', format: 'pcm_s16le', data: Buffer.alloc(32000).toString('base64'), sampleRate: 16000, channels: 1, frameCount: 16000,
+      sequence: { id: 10, name: 'Interview' }, track: null, requestedRange: { startSeconds: 1, durationSeconds: 1, endSeconds: 2 }, actualRange: { startSeconds: 1, durationSeconds: 1, endSeconds: 2 }, signalPath: 'sequence_mix', offlineMedia: [] });
+    if (args.id === 'timeline.razor') {
+      edits++;
+      assert.deepEqual(args.params, { clip: 1, frame: 48 });
+      clips = [{ ...clips[0], durationFrames: 48 }, { ...clips[0], clip: 2, startFrame: 48, start: 48 * 254016000000 / 24, durationFrames: 192 }];
+    }
+    return textResult({ ok: true });
+  } };
+  const mock: typeof fetch = async (url, options) => {
+    const body = JSON.parse(String(options?.body));
+    if (url === 'https://api.openai.com/v1/chat/completions') {
+      audioCalls++;
+      const input = body.messages[1].content.find((c: any) => c.type === 'input_audio');
+      assert.equal(Buffer.from(input.input_audio.data, 'base64').toString('ascii', 0, 4), 'RIFF');
+      return Response.json({ choices: [{ message: { content: 'The sentence ends at excerpt +1.0 second, absolute timeline 2.0 seconds.' } }] });
+    }
+    if (url === 'https://api.typesafe.ai/v1/systemone') {
+      jevCalls++;
+      assert.equal(body.assets, undefined); assert.equal(body.state.image, undefined);
+      assert.equal(body.state.step.atFrame, 48);
+      assert(!JSON.stringify(body).includes('input_audio'));
+      return Response.json({ answers: { action: choice(body.questions.action.criteria, 'execute') } });
+    }
+    assert(body.tools.some((tool: any) => tool.name === 'filmcraft_execute_plan'));
+    assert(!body.tools.some((tool: any) => ['filmcraft_clip_split', 'filmcraft_execute', 'filmcraft_batch', 'filmcraft_ui_control'].includes(tool.name)));
+    assert.match(body.system ?? body.instructions, /You are the planner/);
+    const calls = [
+      { name: 'filmcraft_inspect', input: {} },
+      { name: 'filmcraft_audio_analyze', input: { startSeconds: 1, durationSeconds: 1, question: 'Where does the sentence end?' } },
+      { name: 'filmcraft_execute_plan', input: { plan } },
+    ];
+    if (round >= 2) assert.match(JSON.stringify(body), /audio-model/);
+    const call = calls[round++];
+    if (!call) return provider === 'claude' ? Response.json({ content: [{ type: 'text', text: 'The planned cut was verified.' }] }) : Response.json({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'The planned cut was verified.' }] }] });
+    return provider === 'claude'
+      ? Response.json({ content: [{ type: 'tool_use', id: `call${round}`, name: call.name, input: call.input }] })
+      : Response.json({ output: [{ type: 'function_call', call_id: `call${round}`, name: call.name, arguments: JSON.stringify(call.input) }] });
+  };
+  const api = await startApi(new FilmcraftService(backend), { token, port: 0, chat: { env: { ANTHROPIC_API_KEY: 'claude-key', OPENAI_API_KEY: 'openai-key', TYPESAFE_API_KEY: 'jev-key' }, fetch: mock } });
+  t.after(api.close);
+  const response = await fetch(api.url + '/v1/chat/runs', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, execution: 'jev', message: 'Listen and cut at the end of the sentence.' }) });
+  assert.equal(response.status, 202);
+  const started = await response.json() as any;
+  let run = started;
+  for (let i = 0; run.status === 'running' && i < 100; i++) {
+    await delay(10);
+    run = await (await fetch(api.url + `/v1/chat/runs/${started.id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  }
+  assert.equal(run.execution, 'jev'); assert.equal(run.status, 'done', JSON.stringify(run));
+  assert.equal(edits, 1); assert.equal(jevCalls, 1); assert.equal(audioCalls, 1);
+  assert(run.events.some((e: any) => e.kind === 'result' && e.text.includes('refreshedClipIds')));
+  assert(!JSON.stringify(run).includes('UklGR'));
+});
+
+for (const provider of ['claude', 'chatgpt'] as const) test(`${provider} Jev mode rejects a hallucinated direct mutation at dispatch`, async t => {
+  const { request, finish, calls } = await setup(t, async () => provider === 'claude'
+    ? Response.json({ content: [{ type: 'tool_use', id: 'bad', name: 'filmcraft_clip_split', input: { clip: 1, frame: 1 } }] })
+    : Response.json({ output: [{ type: 'function_call', call_id: 'bad', name: 'filmcraft_clip_split', arguments: '{"clip":1,"frame":1}' }] }));
+  await request('config', { provider, apiKey: key });
+  assert.equal((await request('runs', { provider, execution: 'jev', message: 'Cut.' })).data.error.code, 'MISSING_JEV_KEY');
+  await request('config', { provider: 'jev', apiKey: 'jev-key' });
+  const started = await request('runs', { provider, execution: 'jev', message: 'Cut.' });
+  const run = await finish(started.data.id);
+  assert.equal(run.status, 'error'); assert.match(run.events.at(-1).text, /Unavailable tool/);
+  assert.equal(calls.length, 0);
+});
+
+test('native Apply and Clear callbacks configure provider/audio settings while their initiating sidebar clicks remain in flight', async t => {
+  let apiUrl = '';
+  const results: any[] = [];
+  const patches: Record<string, unknown> = {
+    'chat.settings.apply': { provider: 'claude', apiKey: 'reentrant-claude', model: 'reentrant-model' },
+    'chat.audio.apply': { provider: 'audio', apiKey: 'reentrant-audio', model: 'audio-reentrant' },
+    'chat.settings.clear': { provider: 'claude', apiKey: '' },
+    'chat.audio.clear': { provider: 'audio', apiKey: '' },
+  };
+  const backend: Backend = { mode: 'bridge', connected: true, close: async () => {}, call: async (tool, args) => {
+    const id = (args.params as any)?.id;
+    if (tool === 'ui_control' && args.method === 'ui.click' && patches[id]) {
+      const response = await fetch(apiUrl + '/v1/chat/config', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(patches[id]) });
+      const data = await response.json(); results.push({ status: response.status, data });
+      return textResult(data);
+    }
+    return textResult({});
+  } };
+  const service = new FilmcraftService(backend);
+  const api = await startApi(service, { token, port: 0, chat: { env: {} } }); apiUrl = api.url; t.after(api.close);
+  for (const id of Object.keys(patches)) {
+    const result = await service.invoke('filmcraft_ui_control', { method: 'ui.click', params: { id } });
+    assert(!result.isError);
+    assert.equal(results.at(-1).status, 200, JSON.stringify(results.at(-1)));
+    assert.equal(service.busy, false);
+  }
+  assert.equal(results[0].data.providers.find((p: any) => p.id === 'claude').configured, true);
+  assert.equal(results[1].data.audio.configured, true);
+  assert.equal(results[2].data.providers.find((p: any) => p.id === 'claude').configured, false);
+  assert.equal(results[3].data.audio.configured, false);
+});
+
+test('native Send can reenter run creation, while active assistant inspection and Stop remain available', async t => {
+  let apiUrl = '';
+  let runId = '';
+  let releaseClick!: () => void;
+  const clickGate = new Promise<void>(resolve => { releaseClick = resolve; });
+  let sent!: () => void;
+  const runStarted = new Promise<void>(resolve => { sent = resolve; });
+  let enteredProvider!: () => void;
+  const providerStarted = new Promise<void>(resolve => { enteredProvider = resolve; });
+  const request = async (route: string, body?: unknown) => {
+    const response = await fetch(apiUrl + '/v1/chat/' + route, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    return { status: response.status, data: await response.json() as any };
+  };
+  const backend: Backend = { mode: 'bridge', connected: true, close: async () => {}, call: async (tool, args) => {
+    if (tool === 'ui_control' && args.method === 'ui.click' && (args.params as any).id === 'chat.send') {
+      const started = await request('runs', { provider: 'claude', message: 'Wait for Stop.' });
+      assert.equal(started.status, 202, JSON.stringify(started));
+      runId = started.data.id; sent(); await clickGate;
+      return textResult({ started: runId });
+    }
+    if (tool === 'ui_control' && args.method === 'chat.inspect') return textResult((await request('runs/' + runId)).data);
+    if (tool === 'ui_control' && args.method === 'ui.click' && (args.params as any).id === 'chat.stop') return textResult((await request(`runs/${runId}/cancel`, {})).data);
+    throw new Error('Unexpected native edit');
+  } };
+  const service = new FilmcraftService(backend);
+  const api = await startApi(service, { token, port: 0, chat: { env: { ANTHROPIC_API_KEY: 'test-claude' }, fetch: async (_url, options) => {
+    enteredProvider();
+    await delay(10_000, undefined, { signal: options?.signal ?? undefined });
+    throw new Error('must be cancelled');
+  } } }); apiUrl = api.url;
+  t.after(async () => { releaseClick(); await api.close(); });
+  const sending = service.invoke('filmcraft_ui_control', { method: 'ui.click', params: { id: 'chat.send' } });
+  await runStarted; await providerStarted;
+  const inspected = await service.invoke('filmcraft_ui_control', { method: 'chat.inspect', params: {} });
+  assert.match(JSON.stringify(inspected), /running/);
+  assert.equal((await request('config', { provider: 'claude', apiKey: 'blocked' })).status, 409);
+  await service.invoke('filmcraft_ui_control', { method: 'ui.click', params: { id: 'chat.stop' } });
+  for (let i = 0; service.busy && i < 100; i++) await delay(10);
+  assert.equal((await request('runs/' + runId)).data.status, 'stopped');
+  assert.equal(service.busy, false, 'The still-in-flight assistant Send click must not retain editor ownership');
+  releaseClick(); await sending;
+});
+
+test('configuration atomically reserves shared editor ownership across suspended persistence and releases it after failure', async () => {
+  let entered!: () => void, release!: () => void;
+  const enteredPersistence = new Promise<void>(resolve => { entered = resolve; });
+  const persistenceGate = new Promise<void>(resolve => { release = resolve; });
+  const calls: Params[] = [];
+  const backend: Backend = { mode: 'headless', connected: true, close: async () => {}, call: async (_tool, args) => { calls.push(args); return textResult({}); } };
+  const service = new FilmcraftService(backend);
+  const { ChatService } = await import('../src/chat/service.js');
+  const chat = new ChatService('http://127.0.0.1:9999', token, { ANTHROPIC_API_KEY: 'initial', TYPESAFE_API_KEY: 'jev' }, fetch, service, async () => { entered(); await persistenceGate; throw new Error('controlled persistence failure'); });
+  const configuring = chat.configure({ provider: 'audio', apiKey: 'new-audio', persist: true });
+  const rejected = assert.rejects(configuring, /controlled persistence failure/);
+  await enteredPersistence;
+  assert.equal(service.busy, true);
+  await assert.rejects(service.invoke('filmcraft_project_new', { name: 'must wait' }), (e: any) => e.code === 'BUSY');
+  await assert.rejects(service.invoke('filmcraft_execute_plan', { plan: { version: 1, objective: 'Split', sequence: 10, steps: [{ id: 'cut', operation: 'split', target: { clip: 1, track: 'V1', startFrame: 0, durationFrames: 24 }, atFrame: 12, outcome: 'Split at twelve' }] } }), (e: any) => e.code === 'BUSY');
+  assert.throws(() => chat.start({ provider: 'claude', message: 'must wait' }), (e: any) => e.code === 'BUSY');
+  await assert.rejects(chat.configure({ provider: 'claude', model: 'must wait' }), (e: any) => e.code === 'BUSY');
+  assert.equal(calls.length, 0);
+  release(); await rejected;
+  assert.equal(service.busy, false);
+  assert.equal(chat.providers().audio.configured, false, 'Failed persistence must not publish the candidate credential');
+  await service.invoke('filmcraft_project_new', { name: 'available after failure' });
+  assert.equal(calls.length, 1);
+});
+
+test('actual queued editor work and a running Jev plan prevent configuration reservations', async () => {
+  let release!: () => void;
+  const editGate = new Promise<void>(resolve => { release = resolve; });
+  let enteredJev!: () => void;
+  const jevEntered = new Promise<void>(resolve => { enteredJev = resolve; });
+  const backend: Backend = { mode: 'headless', connected: true, close: async () => {}, call: async (tool, args) => {
+    if (tool === 'doc_inspect') return textResult({ project: { activeSequence: 10 }, sequence: { id: 10, settings: { frame_rate: { num: 24, den: 1 } }, video: [{ id: 20, items: [{ clip: 1, item: 7, startFrame: 0, durationFrames: 24 }] }], audio: [] } });
+    if (args.id === 'file.newProject') await editGate;
+    return textResult({});
+  } };
+  const service = new FilmcraftService(backend);
+  const { ChatService } = await import('../src/chat/service.js');
+  const chat = new ChatService('http://127.0.0.1:9999', token, { TYPESAFE_API_KEY: 'jev' }, async (_url, options) => {
+    enteredJev(); await delay(10_000, undefined, { signal: options?.signal ?? undefined }); throw new Error('cancelled');
+  }, service);
+  const edit = service.invoke('filmcraft_project_new', { name: 'working' });
+  const queued = service.invoke('filmcraft_project_new', { name: 'queued' });
+  await assert.rejects(chat.configure({ provider: 'audio', apiKey: 'blocked' }), (e: any) => e.code === 'BUSY');
+  release(); await Promise.all([edit, queued]);
+  for (let i = 0; service.busy && i < 100; i++) await delay(1);
+  const abort = new AbortController();
+  const executing = service.invoke('filmcraft_execute_plan', { plan: { version: 1, objective: 'Split', sequence: 10, steps: [{ id: 'cut', operation: 'split', target: { clip: 1, track: 'V1', startFrame: 0, durationFrames: 24 }, atFrame: 12, outcome: 'Split at twelve' }] } }, { signal: abort.signal });
+  await jevEntered;
+  await assert.rejects(chat.configure({ provider: 'claude', apiKey: 'blocked' }), (e: any) => e.code === 'BUSY');
+  abort.abort(); await executing;
+  assert.equal(service.busy, false);
+});
+
+for (const provider of ['claude', 'chatgpt'] as const) test(`${provider} cannot use the assistant control bypass to change credentials`, async t => {
+  const { request, finish, calls } = await setup(t, async () => provider === 'claude'
+    ? Response.json({ content: [{ type: 'tool_use', id: 'bad', name: 'filmcraft_ui_control', input: { method: 'ui.click', params: { id: 'chat.settings.apply' } } }] })
+    : Response.json({ output: [{ type: 'function_call', call_id: 'bad', name: 'filmcraft_ui_control', arguments: '{"method":"ui.click","params":{"id":"chat.settings.apply"}}' }] }));
+  await request('config', { provider, apiKey: key });
+  const started = await request('runs', { provider, message: 'Inspect the project.' });
+  const run = await finish(started.data.id);
+  assert.equal(run.status, 'error'); assert.match(run.events.at(-1).text, /Unavailable tool/); assert.equal(calls.length, 0);
+});

@@ -1,0 +1,49 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 43b781b4..64d1f1cb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1907,6 +1907,7 @@ dependencies = [
+ name = "filmcraft-engine"
+ version = "0.9.0"
+ dependencies = [
++ "base64 0.22.1",
+  "craft-docpath",
+  "filmcraft-audio-dsp",
+  "filmcraft-captions",
+diff --git a/crates/engine/Cargo.toml b/crates/engine/Cargo.toml
+index 088163f1..742bfdac 100644
+--- a/crates/engine/Cargo.toml
++++ b/crates/engine/Cargo.toml
+@@ -44,6 +44,7 @@ thiserror = { workspace = true }
+ log = { workspace = true }
+ craft-docpath = { workspace = true }
+ web-time = "1"
++base64 = "0.22.1"
+ 
+ [dev-dependencies]
+ filmcraft-testkit = { workspace = true }
+diff --git a/crates/engine/src/commands.rs b/crates/engine/src/commands.rs
+index 162fb18c..e60e9bb7 100644
+--- a/crates/engine/src/commands.rs
++++ b/crates/engine/src/commands.rs
+@@ -3407,6 +3407,7 @@ fn build() -> Vec<CommandSpec> {
+             Ok(inspect_sequence(s, id, q))
+         }),
+         query!("state.inspect", "Inspect Editor State", "{}", |s, _| Ok(serde_json::to_value(&s.state).unwrap_or_default())),
++        query!("audio.read", "Read Timeline or Imported Media Audio", r#"{"startSeconds":number,"durationSeconds":number,"item":importedMediaId?,"audioStream":zeroBasedIndex?,"track":id|"A1"?,"sampleRate":16000|24000?} (item/track exclusive; audioStream requires item; item uses source seconds)"#, |s, p| crate::filmcraft_audio::read(s, p)),
+         query!(
+             "effects.list",
+             "List Effects",
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 5d0a044d..347e31fd 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -12,6 +12,8 @@
+ 
+ pub mod aaf_omf;
+ pub mod autosave;
++#[path = "../../../../../plugins/filmcraft/native/audio.rs"]
++pub mod filmcraft_audio;
+ pub mod captions;
+ pub mod clip_ops;
+ pub mod color;

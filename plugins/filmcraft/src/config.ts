@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -16,7 +16,7 @@ export function nativeOptions(env = process.env): NativeOptions {
   if (mode !== 'headless' && mode !== 'bridge') throw new PluginError('CONFIG', 'FILMCRAFT_MODE must be headless or bridge');
   const ext = process.platform === 'win32' ? '.exe' : '';
   const candidates = ['release', 'debug'].map(profile => join(filmcraftDirectory(env), 'target', profile, `filmcraft-cli${ext}`));
-  const binary = env.FILMCRAFT_BIN ?? candidates.find(existsSync);
+  const binary = env.FILMCRAFT_BIN ?? candidates.filter(existsSync).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
   if (!binary) throw new PluginError('CONFIG', 'FilmCraft CLI is not built. Run npm run build:filmcraft, or set FILMCRAFT_BIN to an existing filmcraft-cli executable.');
   const timeoutMs = Number(env.FILMCRAFT_TIMEOUT_MS ?? 120_000);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 3_600_000) throw new PluginError('CONFIG', 'FILMCRAFT_TIMEOUT_MS must be an integer from 1000 to 3600000');

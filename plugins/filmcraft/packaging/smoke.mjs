@@ -11,6 +11,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { repository } from '../dist/config.js';
 import { resultData } from '../dist/core.js';
 import { editDemo } from '../examples/workflow.mjs';
+import { makeFixtures } from '../examples/fixtures.mjs';
+import { availableTools } from '../dist/tools/catalog.js';
 
 const windows = process.platform === 'win32';
 if (!windows && process.platform !== 'darwin') throw new Error('Run this test on Windows or macOS.');
@@ -105,6 +107,28 @@ const call = async (name, args = {}) => {
 };
 const control = async (method, params = {}) => resultData(await call('ui_control', { method, params }));
 const click = id => control('ui.click', { id });
+const editorSnapshot = async () => ({
+  project: resultData(await call('inspect')),
+  state: resultData(await call('execute', { id: 'state.inspect', params: {} })),
+  history: resultData(await call('execute', { id: 'history.list', params: {} })),
+});
+const readWav = result => {
+  const audio = result.content.find(c => c.type === 'audio');
+  assert(audio, 'Bundled MCP must return actual audio content');
+  assert.equal(audio.mimeType, 'audio/wav');
+  const wav = Buffer.from(audio.data, 'base64');
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+  assert.equal(wav.readUInt16LE(20), 1);
+  assert.equal(wav.readUInt16LE(22), 1);
+  assert.equal(wav.readUInt32LE(24), 16000);
+  assert.equal(wav.readUInt16LE(34), 16);
+  assert(wav.subarray(44).some(byte => byte !== 0), 'Generated tone must remain audible');
+  return wav;
+};
+let toolCount;
+let sourceAudio;
+let timelineAudio;
 const quit = async () => {
   await control('app.quit').catch(() => {});
   await client.close();
@@ -120,12 +144,49 @@ try {
   const bundled = JSON.parse(await readFile(join(runtime, 'plugins/filmcraft/config/providers.example.json'), 'utf8'));
   assert(Object.values(bundled).every(provider => provider.apiKey === ''));
   await launch();
-  assert.equal((await client.listTools()).tools.length, 54);
+  const names = (await client.listTools()).tools.map(tool => tool.name).sort();
+  assert.deepEqual(names, availableTools('bridge').map(tool => tool.name).sort(), 'Bundled MCP must expose the complete current desktop tool set');
+  for (const name of ['filmcraft_audio_read', 'filmcraft_audio_analyze', 'filmcraft_execute_plan']) assert(names.includes(name));
+  toolCount = names.length;
   const initial = await request('/v1/chat/providers');
   assert(initial.providers.every(p => !p.configured));
   assert(initial.installs.codex.includes(windows ? entry.replaceAll("'", "''") : entry.replaceAll("'", "'\\''")));
   assert(initial.installs['claude-code'].includes(windows ? node.replaceAll("'", "''") : node.replaceAll("'", "'\\''")));
+  const sourceFixture = await makeFixtures(join(scratch, 'unplaced audio'));
+  await call('project_new', { name: 'Imported source audio package proof' });
+  const imported = resultData(await call('media_import', { paths: [sourceFixture.audio] }));
+  assert.deepEqual(imported.errors, []);
+  assert.equal(imported.items.length, 1);
+  const beforeSource = await editorSnapshot();
+  assert.equal(beforeSource.state.active_sequence, null);
+  assert.equal(beforeSource.state.source_item, null);
+  const sourceResult = await call('audio_read', { item: imported.items[0], audioStream: 0, startSeconds: 0.5, durationSeconds: 1 });
+  const sourceWav = readWav(sourceResult);
+  const metadata = resultData(sourceResult);
+  assert.equal(sourceWav.length, 44 + 16000 * 2);
+  assert.equal(metadata.timeBasis, 'source');
+  assert.equal(metadata.signalPath, 'source_original');
+  assert.equal(metadata.source.item, imported.items[0]);
+  assert.equal(metadata.source.durationSeconds, 3);
+  assert.equal(metadata.audioStream.index, 0);
+  assert.equal(metadata.availableAudioStreams[0].sampleRate, 48000);
+  assert.equal(metadata.actualRange.startSeconds, 0.5);
+  assert.equal(metadata.actualRange.endSeconds, 1.5);
+  assert.equal(metadata.mediaStatus.proxyUsed, false);
+  assert.deepEqual(metadata.offlineMedia, []);
+  assert.equal(metadata.sequence, undefined);
+  assert.deepEqual(await editorSnapshot(), beforeSource, 'Imported-source listening must preserve project, active sequence, source monitor, selection, playhead, and history');
+  sourceAudio = { beforePlacement: true, nonzeroSourceOffset: true, wavBytes: sourceWav.length, metadata, editorStateUnchanged: true };
   const demo = await editDemo(client, join(scratch, 'media'));
+  const beforeTimeline = await editorSnapshot();
+  const timelineResult = await call('audio_read', { track: 'A1', startSeconds: 0.5, durationSeconds: 1 });
+  const timelineWav = readWav(timelineResult);
+  const timelineMetadata = resultData(timelineResult);
+  assert.equal(timelineMetadata.timeBasis, 'timeline');
+  assert.equal(timelineMetadata.signalPath, 'track_input_pre_mixer');
+  assert.equal(timelineMetadata.track.label, 'A1');
+  assert.deepEqual(await editorSnapshot(), beforeTimeline, 'Timeline listening must preserve editor state and history');
+  timelineAudio = { wavBytes: timelineWav.length, metadata: timelineMetadata, editorStateUnchanged: true };
   await call('marker_add', { seconds: 1, name: 'Packaged MCP test' });
   assert.match(JSON.stringify(resultData(await call('sequence_inspect'))), /Packaged MCP test/);
   await waitFor(async () => (await control('chat.inspect')).status === 'Ready', 'Sidebar did not connect');
@@ -152,7 +213,7 @@ try {
   assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.apiKey, '');
   await quit();
   await verifyBundle(); // Nothing wrote into the installed app, even when saving keys and restarting.
-  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture, testHostArchitecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, ...(windows ? { visibleWindowsWindow: true } : {}), platform: windows ? 'windows-x64' : `macos-${architecture}`, bundledMcp: true, toolCount: 54, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
+  await writeFile(join(output, 'report.json'), JSON.stringify({ archive, architecture, testHostArchitecture: process.arch, systemPathOnly: true, relocated: true, finderLaunch: !windows, ...(windows ? { visibleWindowsWindow: true } : {}), platform: windows ? 'windows-x64' : `macos-${architecture}`, bundledMcp: true, toolCount, sourceAudio, timelineAudio, fullEditingExportRoundTrip: true, nativeKeyEntryAndPersistence: true, cleanShutdownAndRestart: true, installedFilesUnchanged: true, liveProviderInference: false, demo }, null, 2));
   console.log('Packaged app passed: relocated launch, bundled MCP, real editing/export round trip, UI key persistence, restart, clean shutdown, unchanged installed app. No live cloud requests.');
 } finally {
   if (client) {

@@ -34,8 +34,12 @@ export async function startApi(service: FilmcraftService, options: { token: stri
   const expected = Buffer.from(`Bearer ${options.token}`);
   let apiUrl = '';
   let chat: ChatService | undefined;
+  const mcpRequests = new Map<string, Set<AbortController>>();
   const mcpClosers = new Set<() => Promise<void>>();
   const server = createServer(async (req, res) => {
+    const abort = new AbortController();
+    req.once('aborted', () => abort.abort());
+    res.once('close', () => { if (!res.writableEnded) abort.abort(); });
     try {
       // No browser-origin requests, CORS, or wildcard binding: these tools have local file access.
       if (req.headers.origin) throw new PluginError('ORIGIN_FORBIDDEN', 'Browser-origin requests are not supported', 403);
@@ -61,10 +65,23 @@ export async function startApi(service: FilmcraftService, options: { token: stri
         }
         if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) throw new PluginError('BODY_TOO_LARGE', 'Body exceeds 4 MiB', 413);
         const message = await body(req);
+        // Stateless MCP notifications use a separate POST; bridge cancellation to the original request.
+        if (message?.method === 'notifications/cancelled' && ['number', 'string'].includes(typeof message.params?.requestId)) {
+          for (const active of mcpRequests.get(JSON.stringify(message.params.requestId)) ?? []) active.abort();
+        }
+        const requestKey = message?.method === 'tools/call' && ['number', 'string'].includes(typeof message.id) ? JSON.stringify(message.id) : undefined;
+        if (requestKey) {
+          const active = mcpRequests.get(requestKey) ?? new Set<AbortController>();
+          active.add(abort); mcpRequests.set(requestKey, active);
+        }
         // MCP always calls the public API, including when served on the same port.
-        const mcp = await createMcpServer(new FilmcraftApiClient(apiUrl, options.token));
+        const mcp = await createMcpServer(new FilmcraftApiClient(apiUrl, options.token), { signal: abort.signal });
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-        const close = async () => { mcpClosers.delete(close); await mcp.close(); };
+        const close = async () => {
+          mcpClosers.delete(close);
+          if (requestKey) { const active = mcpRequests.get(requestKey); active?.delete(abort); if (!active?.size) mcpRequests.delete(requestKey); }
+          await mcp.close();
+        };
         mcpClosers.add(close);
         res.once('close', () => { void close().catch(error => process.stderr.write(`MCP close: ${errorMessage(error)}\n`)); });
         await mcp.connect(transport);
@@ -88,7 +105,7 @@ export async function startApi(service: FilmcraftService, options: { token: stri
         }
       } else if (req.method === 'POST') {
         if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) throw new PluginError('BODY_TOO_LARGE', 'Body exceeds 4 MiB', 413);
-        if (route.startsWith('/v1/tools/')) result = await service.invoke(decodeURIComponent(route.slice('/v1/tools/'.length)), await body(req));
+        if (route.startsWith('/v1/tools/')) result = await service.invoke(decodeURIComponent(route.slice('/v1/tools/'.length)), await body(req), { signal: abort.signal });
         else if (route.startsWith('/v1/commands/')) result = await service.invoke('filmcraft_execute', { id: decodeURIComponent(route.slice('/v1/commands/'.length)), params: await body(req) });
         else if (route === '/v1/batch') result = await service.invoke('filmcraft_batch', await body(req));
         else if (route === '/v1/render') result = await service.invoke('filmcraft_render_preview', await body(req));
@@ -109,7 +126,11 @@ export async function startApi(service: FilmcraftService, options: { token: stri
   const address = server.address();
   if (!address || typeof address === 'string') throw new PluginError('LISTEN_FAILED', 'No TCP address');
   apiUrl = `http://127.0.0.1:${address.port}`;
-  if (options.chat) chat = new ChatService(apiUrl, options.token, options.chat.env, options.chat.fetch);
+  if (options.chat) {
+    const runtimeEnv = options.chat.env ?? process.env;
+    service.configureRuntime(runtimeEnv, options.chat.fetch);
+    chat = new ChatService(apiUrl, options.token, runtimeEnv, options.chat.fetch, service);
+  }
   return {
     url: apiUrl,
     close: async () => {

@@ -9,7 +9,7 @@ import { startStdio } from './mcp/server.js';
 import { nativeOptions } from './config.js';
 import { errorMessage } from './core.js';
 import { launchDesktop, desktopApi } from './chat/desktop.js';
-import { initProviderConfig } from './chat/config.js';
+import { initProviderConfig, loadProviderEnvironment } from './chat/config.js';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 let stopping = false;
@@ -58,7 +58,8 @@ async function main() {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('FILMCRAFT_API_PORT must be 0..65535');
     const backend = await NativeBackend.connect(nativeOptions());
     cleanups.push(() => backend.close());
-    const api = await startApi(new FilmcraftService(backend), { token, port });
+    const providerEnv = await loadProviderEnvironment();
+    const api = await startApi(new FilmcraftService(backend, { env: providerEnv }), { token, port });
     cleanups.push(api.close);
     url = api.url;
     process.stderr.write(`FilmCraft ${backend.mode} API ready at ${url}; bearer authentication required.\n`);

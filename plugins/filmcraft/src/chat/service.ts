@@ -1,3 +1,5 @@
+import { audioConfig, audioReadiness, analyzeAudio } from './audio.js';
+import type { FilmcraftService } from '../api/service.js';
 import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -11,10 +13,10 @@ import { DebugTrace, debugDirectory } from './debug.js';
 import type { DebugInfo } from './debug.js';
 
 const provider = z.enum(['claude', 'chatgpt', 'jev']);
-const startSchema = z.strictObject({ provider, session: z.string().uuid().optional(), message: z.string().trim().min(1).max(16000) });
-const configSchema = z.strictObject({ provider, apiKey: z.string().trim().max(4096).refine(value => !/[\r\n]/.test(value)).optional(), model: z.string().trim().min(1).max(200).optional(), persist: z.boolean().optional(), debugLogging: z.boolean().optional() });
+const startSchema = z.strictObject({ provider, execution: z.enum(['direct', 'jev']).default('direct'), session: z.string().uuid().optional(), message: z.string().trim().min(1).max(16000) });
+const configSchema = z.strictObject({ provider: z.enum(['claude', 'chatgpt', 'jev', 'audio']), apiKey: z.string().trim().max(4096).refine(value => !/[\r\n]/.test(value)).optional(), model: z.string().trim().min(1).max(200).optional(), persist: z.boolean().optional(), debugLogging: z.boolean().optional() });
 type Event = { kind: 'user' | 'assistant' | 'tool' | 'result' | 'error'; text: string };
-interface Run { id: string; session: string; provider: ProviderId; status: 'running' | 'done' | 'error' | 'stopping' | 'stopped'; events: Event[]; debug?: DebugInfo }
+interface Run { execution: 'direct' | 'jev'; id: string; session: string; provider: ProviderId; status: 'running' | 'done' | 'error' | 'stopping' | 'stopped'; events: Event[]; debug?: DebugInfo }
 interface Session { provider: ProviderId; turns: Turn[] }
 
 export class ChatService {
@@ -23,7 +25,9 @@ export class ChatService {
   private runs = new Map<string, Run>();
   private active?: { abort: AbortController; task: Promise<void>; run: Run };
   private configuring = false;
-  constructor(private url: string, private token: string, private env = process.env, private providerFetch: typeof fetch = fetch) {
+  constructor(private url: string, private token: string, private env = process.env, private providerFetch: typeof fetch = fetch, private service?: FilmcraftService, private persistConfig: typeof saveProviderConfig = saveProviderConfig) {
+    this.env = { ...env };
+    this.service?.configureRuntime(this.env, this.providerFetch);
     this.configs = {
       claude: { apiKey: env.ANTHROPIC_API_KEY ?? '', model: env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6', debugLogging: env.ANTHROPIC_DEBUG_LOGGING === '1' },
       chatgpt: { apiKey: env.OPENAI_API_KEY ?? '', model: env.OPENAI_MODEL ?? 'gpt-5.4', debugLogging: env.OPENAI_DEBUG_LOGGING === '1' },
@@ -31,39 +35,47 @@ export class ChatService {
     };
   }
   providers() {
-    return { providers: Object.entries(this.configs).map(([id, config]) => ({ id, model: config.model, configured: !!config.apiKey, experimental: id === 'jev', debugLogging: !!config.debugLogging })), experimentalJevHeader: 'TypeSafe-Danger-Zone-Images: true' };
+    return { providers: Object.entries(this.configs).map(([id, config]) => ({ id, model: config.model, configured: !!config.apiKey, experimental: id === 'jev', debugLogging: !!config.debugLogging })), audio: audioReadiness(this.env), executionModes: ['direct', 'jev'], experimentalJevHeader: 'TypeSafe-Danger-Zone-Images: true' };
   }
   async configure(input: unknown) {
     const parsed = configSchema.safeParse(input);
     if (!parsed.success) throw new PluginError('INVALID_ARGUMENTS', 'Expected provider and optional apiKey/model/debugLogging', 400);
     if (this.active || this.configuring) throw new PluginError('BUSY', 'Wait for the active operation before changing credentials', 409);
     const { provider, persist, ...patch } = parsed.data;
+    const owner = this.service?.beginConfiguration();
     this.configuring = true;
     try {
-      if (persist) await saveProviderConfig(provider, patch, this.env);
-      Object.assign(this.configs[provider], patch);
+      if (persist) await this.persistConfig(provider, patch, this.env);
+      if (provider !== 'audio') Object.assign(this.configs[provider], patch);
+      const names = { claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'], chatgpt: ['OPENAI_API_KEY', 'OPENAI_MODEL'], jev: ['TYPESAFE_API_KEY', 'JEV_MODEL'], audio: ['FILMCRAFT_AUDIO_API_KEY', 'FILMCRAFT_AUDIO_MODEL'] }[provider];
+      if (patch.apiKey !== undefined) this.env[names[0]!] = patch.apiKey;
+      if (patch.model !== undefined) this.env[names[1]!] = patch.model;
+      if (provider === 'audio' && patch.apiKey !== undefined) this.env.FILMCRAFT_AUDIO_KEY_SOURCE = persist ? 'settings' : 'session';
       return { ...this.providers(), saved: !!persist };
-    } finally { this.configuring = false; }
+    } finally { if (owner) this.service?.endConfiguration(owner); this.configuring = false; }
   }
   start(input: unknown) {
     const parsed = startSchema.safeParse(input);
     if (!parsed.success) throw new PluginError('INVALID_ARGUMENTS', 'Expected provider, message (1–16000 characters), and optional session UUID', 400);
-    if (this.active || this.configuring) throw new PluginError('BUSY', 'Another operation is running. Stop or wait for it first.', 409);
+    if (this.active || this.configuring || this.service?.busy) throw new PluginError('BUSY', 'Another operation is running. Stop or wait for it first.', 409);
     const { provider, message } = parsed.data;
+    const execution = provider === 'jev' ? 'direct' : parsed.data.execution;
     const config = { ...this.configs[provider] };
     if (!config.apiKey) throw new PluginError('MISSING_KEY', `Add an API key for ${provider} in chat Settings`, 400);
+    if (execution === 'jev' && !this.configs.jev.apiKey) throw new PluginError('MISSING_JEV_KEY', 'Jev execution requires a Jev API key in Settings or TYPESAFE_API_KEY/JEV_API_KEY.', 400);
     const sessionId = parsed.data.session ?? randomUUID();
     const session = this.sessions.get(sessionId) ?? { provider, turns: [] };
     if (session.provider !== provider) throw new PluginError('PROVIDER_MISMATCH', 'Start a new chat when switching provider', 400);
     if (session.turns.reduce((n, t) => n + t.text.length, 0) > 100_000) throw new PluginError('CONTEXT_LIMIT', 'Start a new chat; this conversation reached its context limit', 400);
+    const owner = this.service?.beginChat();
     session.turns.push({ role: 'user', text: message });
     this.sessions.set(sessionId, session);
     while (this.sessions.size > 20) this.sessions.delete(this.sessions.keys().next().value!);
-    const run: Run = { id: randomUUID(), session: sessionId, provider, status: 'running', events: [{ kind: 'user', text: message }] };
+    const run: Run = { execution, id: randomUUID(), session: sessionId, provider, status: 'running', events: [{ kind: 'user', text: message }] };
     this.runs.set(run.id, run);
     while (this.runs.size > 40) this.runs.delete(this.runs.keys().next().value!);
     const abort = new AbortController();
-    const task = this.execute(run, session, config, abort.signal).finally(() => { this.active = undefined; });
+    const task = this.execute(run, session, config, abort.signal, owner).finally(() => { if (owner) this.service?.endChat(owner); this.active = undefined; });
     this.active = { abort, task, run };
     return run;
   }
@@ -81,10 +93,10 @@ export class ChatService {
     return run;
   }
   async close() { this.active?.abort.abort(); await this.active?.task; }
-  private async execute(run: Run, session: Session, config: ProviderConfig, signal: AbortSignal) {
+  private async execute(run: Run, session: Session, config: ProviderConfig, signal: AbortSignal, owner?: symbol) {
     const client = new Client({ name: 'filmcraft-chat', version: '0.1.0' });
     const transport = new StreamableHTTPClientTransport(new URL(`${this.url}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${this.token}` } } });
-    const trace = config.debugLogging ? new DebugTrace(debugDirectory(this.env), [this.token, ...Object.values(this.configs).map(c => c.apiKey)]) : undefined;
+    const trace = config.debugLogging ? new DebugTrace(debugDirectory(this.env), [this.token, audioConfig(this.env).apiKey, ...Object.values(this.configs).map(c => c.apiKey)]) : undefined;
     if (trace) {
       run.debug = trace.info;
       await trace.start(run.id);
@@ -96,10 +108,12 @@ export class ChatService {
       await client.connect(transport);
       const { tools } = await client.listTools();
       // Chat never controls its own credentials, composer or run lifecycle through UI automation.
-      const permitted = tools.filter(t => !['filmcraft_ui_control', 'filmcraft_ui_elements', 'filmcraft_ui_inspect'].includes(t.name));
+      const permitted = tools.filter(t => !['filmcraft_ui_control', 'filmcraft_ui_elements', 'filmcraft_ui_inspect'].includes(t.name))
+        .filter(t => run.execution === 'jev' ? !!t.annotations?.readOnlyHint || t.name === 'filmcraft_execute_plan' : t.name !== 'filmcraft_execute_plan')
+        .filter(t => run.provider !== 'jev' || !['filmcraft_execute_plan', 'filmcraft_audio_read', 'filmcraft_audio_analyze'].includes(t.name));
       const emit = (kind: Event['kind'], text: string) => { run.events.push({ kind, text: text.slice(0, 6000) }); };
       const runner = { claude: runClaude, chatgpt: runChatgpt, jev: runJev }[run.provider];
-      await runner({ config, turns: session.turns, tools: permitted, signal, fetch: this.providerFetch, trace: trace?.write,
+      await runner({ config, execution: run.execution, audioObservation: result => analyzeAudio(result, audioConfig(this.env), 'Transcribe and describe the audible evidence and useful edit boundaries, with uncertainty and excerpt-relative timestamps.', signal, this.providerFetch), turns: session.turns, tools: permitted, signal, fetch: this.providerFetch, trace: trace?.write,
         say: text => emit('assistant', text),
         call: async (name, args) => {
           signal.throwIfAborted();
@@ -109,7 +123,7 @@ export class ChatService {
           const started = Date.now();
           await trace?.write('tool.call', { name, args });
           try {
-            const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 130_000 });
+            const result = this.service ? await this.service.invoke(name, args, { signal, owner }) : await client.callTool({ name, arguments: args }, undefined, { timeout: 130_000, signal });
             // Avoid including base64 in the transcript. Preserve complete results for the provider.
             const validated = (await import('@modelcontextprotocol/sdk/types.js')).CallToolResultSchema.parse(result);
             emit('result', toolText(validated));
@@ -127,7 +141,7 @@ export class ChatService {
       status = signal.aborted ? 'stopped' : 'error';
       const message = signal.aborted ? 'Stopped. Already completed edits remain; use Undo to revert. An in-flight tool or export may finish.' : errorMessage(error);
       // Tool/provider errors must not reveal configured credentials.
-      run.events.push({ kind: 'error', text: config.apiKey ? message.replaceAll(config.apiKey, '[redacted]') : message });
+      run.events.push({ kind: 'error', text: [this.token, audioConfig(this.env).apiKey, ...Object.values(this.configs).map(c => c.apiKey)].filter(Boolean).reduce((text, key) => text.replaceAll(key, '[redacted]'), message) });
     } finally {
       await trace?.write('run.finish', { status, toolCalls: count, events: run.events });
       await trace?.close();

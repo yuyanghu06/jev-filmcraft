@@ -10,7 +10,7 @@ const settings = z.strictObject({
   model: z.string().trim().min(1).max(200).optional(),
   debugLogging: z.boolean().optional(),
 });
-const schema = z.strictObject({ claude: settings.optional(), chatgpt: settings.optional(), jev: settings.optional() });
+const schema = z.strictObject({ claude: settings.optional(), chatgpt: settings.optional(), jev: settings.optional(), audio: settings.optional() });
 export const defaultProviderConfig = join(repository, 'plugins/filmcraft/config/providers.local.json');
 export function providerConfigPath(env: NodeJS.ProcessEnv = process.env) {
   return env.FILMCRAFT_PROVIDERS_CONFIG ? resolve(env.FILMCRAFT_PROVIDERS_CONFIG) : defaultProviderConfig;
@@ -36,7 +36,7 @@ async function readProviderConfig(env: NodeJS.ProcessEnv): Promise<z.infer<typeo
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     const fields = parsed.error.issues.map(issue => issue.path.join('.') || 'root').join(', ');
-    throw new PluginError('CONFIG', `Invalid provider configuration fields: ${fields}. Use claude/chatgpt/jev objects with apiKey/model strings and an optional debugLogging boolean.`, 400);
+    throw new PluginError('CONFIG', `Invalid provider configuration fields: ${fields}. Use claude/chatgpt/jev/audio objects with apiKey/model strings and an optional debugLogging boolean.`, 400);
   }
   return parsed.data;
 }
@@ -50,6 +50,9 @@ export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.e
     ANTHROPIC_MODEL: env.ANTHROPIC_MODEL ?? config.claude?.model,
     OPENAI_API_KEY: env.OPENAI_API_KEY ?? config.chatgpt?.apiKey,
     OPENAI_MODEL: env.OPENAI_MODEL ?? config.chatgpt?.model,
+    FILMCRAFT_AUDIO_API_KEY: env.FILMCRAFT_AUDIO_API_KEY ?? config.audio?.apiKey,
+    FILMCRAFT_AUDIO_MODEL: env.FILMCRAFT_AUDIO_MODEL ?? config.audio?.model,
+    FILMCRAFT_AUDIO_KEY_SOURCE: env.FILMCRAFT_AUDIO_API_KEY !== undefined ? 'environment' : config.audio?.apiKey ? 'settings' : undefined,
     TYPESAFE_API_KEY: env.TYPESAFE_API_KEY ?? env.JEV_API_KEY ?? config.jev?.apiKey,
     JEV_MODEL: env.JEV_MODEL ?? config.jev?.model,
     ANTHROPIC_DEBUG_LOGGING: env.ANTHROPIC_DEBUG_LOGGING ?? (config.claude?.debugLogging ? '1' : '0'),
@@ -59,7 +62,7 @@ export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.e
 }
 
 /** Persist only explicitly supplied fields, atomically, with owner-only permissions. */
-export async function saveProviderConfig(provider: 'claude' | 'chatgpt' | 'jev', patch: { apiKey?: string; model?: string; debugLogging?: boolean }, env: NodeJS.ProcessEnv) {
+export async function saveProviderConfig(provider: 'claude' | 'chatgpt' | 'jev' | 'audio', patch: { apiKey?: string; model?: string; debugLogging?: boolean }, env: NodeJS.ProcessEnv) {
   const parsed = settings.safeParse(patch);
   if (!parsed.success) throw new PluginError('CONFIG', 'Invalid provider settings', 400);
   await initProviderConfig(env);

@@ -40,7 +40,7 @@ export function debugRedactor(secrets: string[]) {
       if (seen.has(v)) return '[circular reference]';
       seen.add(v);
       const result = Array.isArray(v) ? v.map(x => visit(x, depth + 1)) : Object.fromEntries(Object.entries(v).map(([key, item]) => [text(key), secretField.test(key) ? '[redacted]' :
-        binaryField.test(key) || (key === 'data' && ['image', 'audio', 'base64'].includes(String((v as any).type))) ? '[media omitted]' : visit(item, depth + 1)]));
+        binaryField.test(key) || (key === 'data' && (['image', 'audio', 'base64'].includes(String((v as any).type)) || (v as any).format === 'wav' || (v as any).encoding === 'base64')) ? '[media omitted]' : visit(item, depth + 1)]));
       seen.delete(v);
       return result;
     };

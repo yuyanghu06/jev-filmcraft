@@ -21,6 +21,10 @@ pub struct ChatPanel {
     width: f32,
     provider: String,
     providers: Value,
+    audio: Value,
+    audio_model: String,
+    audio_key: String,
+    execution: String,
     installs: Value,
     settings: bool,
     remember: bool,
@@ -50,6 +54,10 @@ impl Default for ChatPanel {
             width: 380.0,
             provider: "claude".into(),
             providers: Value::Null,
+            audio: Value::Null,
+            audio_model: "gpt-audio-1.5".into(),
+            audio_key: String::new(),
+            execution: "direct".into(),
             installs: Value::Null,
             settings: false,
             remember: std::env::var("FILMCRAFT_PACKAGED").is_ok_and(|v| v == "1"),
@@ -74,7 +82,8 @@ impl Default for ChatPanel {
 impl ChatPanel {
     pub fn inspect(&self) -> Value {
         json!({"enabled": !self.url.is_empty(), "open": self.open, "provider": self.provider, "status": self.status,
-            "running": self.run.is_some(), "settings": self.settings, "messages": self.transcript.len(),
+            "running": self.run.is_some(), "settings": self.settings, "messages": self.transcript.len(), "execution": self.execution,
+            "audio": self.audio,
             "debugLogging": self.debug_logging, "debugPath": self.debug_path, "debugError": self.debug_error, "debugTruncated": self.debug_truncated})
     }
     fn request(&mut self, kind: &'static str, route: String, payload: Option<Value>, ctx: &egui::Context) {
@@ -117,6 +126,9 @@ impl ChatPanel {
             }
             Ok(value) if kind == "providers" || kind == "config" => {
                 self.providers = value["providers"].clone();
+                self.audio = value["audio"].clone();
+                self.audio_model = self.audio["model"].as_str().unwrap_or("gpt-audio-1.5").to_owned();
+                self.audio_key.clear();
                 if value.get("installs").is_some() {
                     self.installs = value["installs"].clone();
                 }
@@ -157,6 +169,36 @@ impl ChatPanel {
         self.debug_path.clear();
         self.debug_error.clear();
         self.debug_truncated = false;
+    }
+
+    fn audio_settings(&mut self, ui: &mut Ui, t: &Tokens, ctx: &egui::Context, register: &mut impl FnMut(&str, &Response, &str)) {
+        ui.separator();
+        ui.label(RichText::new("Audio analysis · OpenAI").font(Tokens::semibold(12.0)));
+        ui.label(RichText::new("Listening uses an additional OpenAI audio model and API key, including with Claude. Its analysis is returned to your selected planner.").small().color(t.text_dim));
+        let ready = self.audio["configured"].as_bool().unwrap_or(false);
+        let source = self.audio["keySource"].as_str().unwrap_or("none");
+        ui.label(RichText::new(if ready { format!("Audio key configured ({source})") } else { "Audio key needed to listen to tracks".into() }).small().color(t.text_dim));
+        ui.label(RichText::new("Audio model").color(t.text_dim));
+        let r = ui.add(egui::TextEdit::singleline(&mut self.audio_model).desired_width(f32::INFINITY));
+        register("chat.audio.model", &r, "OpenAI audio model");
+        let r = ui.add(egui::TextEdit::singleline(&mut self.audio_key).password(true).desired_width(f32::INFINITY).hint_text("Audio API key (or reuse OpenAI key)"));
+        register("chat.audio.key", &r, "OpenAI audio API key");
+        ui.horizontal(|ui| {
+            let r = ui.add_enabled(self.pending.is_none() && !self.audio_model.is_empty(), egui::Button::new("Apply audio settings"));
+            register("chat.audio.apply", &r, "Apply audio settings");
+            if r.clicked() {
+                let mut payload = json!({"provider":"audio","model":self.audio_model,"persist":self.remember});
+                if !self.audio_key.is_empty() { payload["apiKey"] = self.audio_key.clone().into(); }
+                self.request("config", "/v1/chat/config".into(), Some(payload), ctx);
+                self.audio_key.clear();
+            }
+            let r = ui.add_enabled(self.pending.is_none(), egui::Button::new("Clear audio key"));
+            register("chat.audio.clear", &r, "Clear dedicated audio key");
+            if r.clicked() {
+                self.request("config", "/v1/chat/config".into(), Some(json!({"provider":"audio","apiKey":"","persist":self.remember})), ctx);
+            }
+        });
+        ui.label(RichText::new("Clearing a dedicated key still permits the configured OpenAI key fallback.").small().color(t.text_dim));
     }
 
     pub fn show(&mut self, ui: &mut Ui, body: Rect, t: &Tokens, register: &mut impl FnMut(&str, &Response, &str)) -> Rect {
@@ -213,20 +255,18 @@ impl ChatPanel {
             if r.clicked() {
                 self.open = false;
             }
-            if self.provider != "codex" && self.provider != "claude-code" {
                 ui.add_enabled_ui(self.run.is_none() && self.pending.is_none(), |ui| {
                     let r = toolbar_icon(ui, Icon::Gear, self.settings, t, "Provider settings");
                     register("chat.settings", &r, "Provider settings");
                     if r.clicked() {
                         self.settings = !self.settings;
                     }
-                    let r = toolbar_icon(ui, Icon::Plus, false, t, "New chat");
-                    register("chat.new", &r, "New chat");
-                    if r.clicked() {
-                        self.new_chat();
+                    if self.provider != "codex" && self.provider != "claude-code" {
+                        let r = toolbar_icon(ui, Icon::Plus, false, t, "New chat");
+                        register("chat.new", &r, "New chat");
+                        if r.clicked() { self.new_chat(); }
                     }
                 });
-            }
         });
         let content = Rect::from_min_max(pos2(panel.min.x + 12.0, header.max.y + 8.0), panel.max - vec2(12.0, 8.0));
         ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
@@ -246,12 +286,20 @@ impl ChatPanel {
             });
             if old_provider != self.provider {
                 self.new_chat();
+                self.execution = "direct".into();
                 self.key.clear();
                 self.load_model();
                 self.settings = false;
             }
             ui.add_space(8.0);
             if self.provider == "codex" || self.provider == "claude-code" {
+                if self.settings {
+                    egui::ScrollArea::vertical().id_salt("chat.external.settings").max_height(260.0).show(ui, |ui| {
+                        let r = ui.checkbox(&mut self.remember, "Save on this device");
+                        register("chat.settings.remember", &r, "Save audio settings on this device");
+                        self.audio_settings(ui, t, &ctx, register);
+                    });
+                }
                 ui.label(RichText::new("Connect your coding agent").font(Tokens::semibold(12.0)));
                 ui.label(if cfg!(target_os = "windows") {
                     "Paste this command in PowerShell, then restart the agent. Keep this FilmCraft window open so it can edit this project."
@@ -275,6 +323,7 @@ impl ChatPanel {
                 ui.separator();
                 ui.label(RichText::new("MCP tools share the live timeline, project state and Undo history.").color(t.text_dim));
                 ui.label(RichText::new("Chat with Codex or Claude Code in its own app or terminal.").color(t.text_dim));
+                ui.label(RichText::new("Your LLM reads images and listens with audio_read / audio_analyze. Use filmcraft_execute_plan to send its editing plan to Jev. Jev needs its own API key.").color(t.text_dim));
                 ui.add_space(8.0);
                 ui.label(RichText::new(&self.status).small().color(t.text_dim));
                 return;
@@ -284,7 +333,27 @@ impl ChatPanel {
                 ui.painter().circle_filled(dot.center(), 2.5, if self.configured() { t.render_green } else { t.text_faint });
                 ui.label(RichText::new(if self.configured() { "API key configured" } else { "Add an API key in settings" }).small().color(t.text_dim));
             });
+            if self.provider == "claude" || self.provider == "chatgpt" {
+                let old_execution = self.execution.clone();
+                ui.add_enabled_ui(self.run.is_none() && self.pending.is_none(), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Execute edits").color(t.text_dim));
+                        let combo = egui::ComboBox::from_id_salt("chat.execution").selected_text(if self.execution == "jev" { "Jev" } else { "Direct tools" }).show_ui(ui, |ui| {
+                            for (id, label) in [("direct", "Direct tools"), ("jev", "Jev")] {
+                                let r = ui.selectable_value(&mut self.execution, id.into(), label);
+                                register(&format!("chat.execution.{id}"), &r, label);
+                            }
+                        });
+                        register("chat.execution", &combo.response, "Choose edit executor");
+                    });
+                });
+                if old_execution != self.execution { self.new_chat(); }
+                if self.execution == "jev" {
+                    ui.label(RichText::new("Your LLM analyzes media and plans cuts; Jev executes the plan. Configure Jev's key in its provider settings.").small().color(t.text_dim));
+                }
+            }
             if self.settings {
+                egui::ScrollArea::vertical().id_salt("chat.settings.scroll").max_height((ui.available_height() - 230.0).max(120.0)).show(ui, |ui| {
                 ui.separator();
                 ui.label(RichText::new("Provider settings").font(Tokens::semibold(12.0)));
                 ui.label(RichText::new("Model").color(t.text_dim));
@@ -325,6 +394,8 @@ impl ChatPanel {
                         .small()
                         .color(t.text_dim),
                 );
+                self.audio_settings(ui, t, &ctx, register);
+                });
             }
             if self.provider == "jev" {
                 ui.label(RichText::new("Experimental · Jev vision enabled").small().color(t.text_dim));
@@ -415,7 +486,7 @@ impl ChatPanel {
                 register("chat.send", &r, "Send message");
                 if r.clicked() {
                     self.seen = 0;
-                    let mut payload = json!({"provider": self.provider, "message": self.prompt});
+                    let mut payload = json!({"provider": self.provider, "message": self.prompt, "execution": self.execution});
                     if let Some(session) = &self.session {
                         payload["session"] = Value::String(session.clone());
                     }
