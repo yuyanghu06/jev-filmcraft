@@ -28,6 +28,8 @@ Choose a provider in the Assistant sidebar, open its gear/settings button, paste
 
 Settings are written atomically outside the installed app, so replacing the app preserves them. The JSON file is **not encrypted**. Mac uses owner-only permissions; Windows inherits your user-profile permissions. Editor preferences, cache and recovery data use the adjacent `editor` directory. The API session file is removed on exit. An API key marked *configured* has been stored; it has not necessarily authenticated successfully. Projects are saved wherever you choose in the editor.
 
+To troubleshoot model behavior, enable **Debug logging** in the selected provider's sidebar Settings and click **Apply**. After a run, use **Copy debug log path**. Local JSONL logs contain prompts, project context, provider responses, Jev confidence/decisions, and tool activity. Keys are redacted and images omitted. They are stored in the `debug` directory beside `providers.json`; the latest 20 runs are retained with size limits. Nothing uploads automatically. Logging is off by default; **Save on this device** remembers the setting.
+
 Codex and Claude Code show copyable MCP install commands. Put the app in its permanent location **before** copying a command. Paste it into **PowerShell on Windows** or your terminal on Mac, then restart the agent. These commands use the bundled Node runtime and connect to the open editor's timeline. Recopy the command if you move or rename the app later. Jev's experimental image flag remains enabled.
 
 ## Build a release

@@ -24,6 +24,10 @@ pub struct ChatPanel {
     installs: Value,
     settings: bool,
     remember: bool,
+    debug_logging: bool,
+    debug_path: String,
+    debug_error: String,
+    debug_truncated: bool,
     model: String,
     key: String,
     prompt: String,
@@ -49,6 +53,10 @@ impl Default for ChatPanel {
             installs: Value::Null,
             settings: false,
             remember: std::env::var("FILMCRAFT_PACKAGED").is_ok_and(|v| v == "1"),
+            debug_logging: false,
+            debug_path: String::new(),
+            debug_error: String::new(),
+            debug_truncated: false,
             model: String::new(),
             key: String::new(),
             prompt: String::new(),
@@ -66,7 +74,8 @@ impl Default for ChatPanel {
 impl ChatPanel {
     pub fn inspect(&self) -> Value {
         json!({"enabled": !self.url.is_empty(), "open": self.open, "provider": self.provider, "status": self.status,
-            "running": self.run.is_some(), "settings": self.settings, "messages": self.transcript.len()})
+            "running": self.run.is_some(), "settings": self.settings, "messages": self.transcript.len(),
+            "debugLogging": self.debug_logging, "debugPath": self.debug_path, "debugError": self.debug_error, "debugTruncated": self.debug_truncated})
     }
     fn request(&mut self, kind: &'static str, route: String, payload: Option<Value>, ctx: &egui::Context) {
         if self.pending.is_some() {
@@ -91,6 +100,7 @@ impl ChatPanel {
     }
     fn load_model(&mut self) {
         self.model = self.provider_info().and_then(|v| v["model"].as_str()).unwrap_or("").to_owned();
+        self.debug_logging = self.provider_info().and_then(|v| v["debugLogging"].as_bool()).unwrap_or(false);
     }
     fn receive(&mut self) {
         let Some((kind, result)) = self.pending.as_ref().and_then(|r| r.try_recv().ok()) else {
@@ -120,6 +130,9 @@ impl ChatPanel {
                 .into();
             }
             Ok(value) => {
+                self.debug_path = value["debug"]["path"].as_str().unwrap_or("").to_owned();
+                self.debug_error = value["debug"]["error"].as_str().unwrap_or("").to_owned();
+                self.debug_truncated = value["debug"]["truncated"].as_bool().unwrap_or(false);
                 self.session = value["session"].as_str().map(str::to_owned);
                 if let Some(events) = value["events"].as_array() {
                     for event in events.iter().skip(self.seen) {
@@ -141,6 +154,9 @@ impl ChatPanel {
         self.transcript.clear();
         self.seen = 0;
         self.status = "Ready".into();
+        self.debug_path.clear();
+        self.debug_error.clear();
+        self.debug_truncated = false;
     }
 
     pub fn show(&mut self, ui: &mut Ui, body: Rect, t: &Tokens, register: &mut impl FnMut(&str, &Response, &str)) -> Rect {
@@ -278,12 +294,15 @@ impl ChatPanel {
                 let r = ui.add(egui::TextEdit::singleline(&mut self.key).password(true).desired_width(f32::INFINITY).hint_text("Paste key to replace"));
                 register("chat.key", &r, "API key");
                 let r = ui.checkbox(&mut self.remember, "Save on this device");
-                register("chat.settings.remember", &r, "Save provider settings on this Mac");
+                register("chat.settings.remember", &r, "Save provider settings on this device");
+                let r = ui.checkbox(&mut self.debug_logging, "Debug logging");
+                register("chat.settings.debug", &r, "Debug logging");
+                ui.label(RichText::new("Keeps prompts, model responses and tool activity locally. Keys are redacted; images are omitted.").small().color(t.text_dim));
                 ui.horizontal(|ui| {
                     let r = ui.add_enabled(self.pending.is_none() && !self.model.is_empty(), egui::Button::new("Apply"));
                     register("chat.settings.apply", &r, "Apply settings");
                     if r.clicked() {
-                        let mut payload = json!({"provider": self.provider, "model": self.model, "persist": self.remember});
+                        let mut payload = json!({"provider": self.provider, "model": self.model, "persist": self.remember, "debugLogging": self.debug_logging});
                         if !self.key.is_empty() {
                             payload["apiKey"] = Value::String(self.key.clone());
                         }
@@ -310,6 +329,19 @@ impl ChatPanel {
             if self.provider == "jev" {
                 ui.label(RichText::new("Experimental · Jev vision enabled").small().color(t.text_dim));
                 ui.label(RichText::new("Quote text and include exact values. Complex arguments accept JSON.").small().color(t.text_dim));
+            }
+            if !self.debug_path.is_empty() {
+                let r = ui.button("Copy debug log path").on_hover_text(&self.debug_path);
+                register("chat.debug.copy", &r, "Copy debug log path");
+                if r.clicked() {
+                    ctx.copy_text(self.debug_path.clone());
+                }
+            }
+            if !self.debug_error.is_empty() {
+                ui.label(RichText::new(&self.debug_error).small().color(t.danger));
+            }
+            if self.debug_truncated {
+                ui.label(RichText::new("Debug log reached a size limit; some content was omitted.").small().color(t.text_dim));
             }
             ui.separator();
             let footer_h = 134.0;
@@ -365,10 +397,15 @@ impl ChatPanel {
                     }
                 });
             ui.separator();
-            let r = ui.add_enabled(
-                self.run.is_none(),
-                egui::TextEdit::multiline(&mut self.prompt).desired_rows(3).desired_width(f32::INFINITY).char_limit(16000).hint_text("Describe an edit…"),
-            );
+            // Long prompts scroll inside the composer instead of pushing Send below the window.
+            let composer = egui::ScrollArea::vertical().id_salt("chat.composer").max_height(64.0).min_scrolled_height(64.0).auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_enabled(
+                    self.run.is_none(),
+                    egui::TextEdit::multiline(&mut self.prompt).desired_rows(3).desired_width(f32::INFINITY).char_limit(16000).hint_text("Describe an edit…"),
+                )
+            });
+            let mut r = composer.inner;
+            r.rect = r.rect.intersect(composer.inner_rect);
             register("chat.prompt", &r, "Chat message");
             ui.horizontal(|ui| {
                 let r = ui.add_enabled(

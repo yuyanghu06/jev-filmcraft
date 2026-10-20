@@ -96,6 +96,8 @@ Connect Jev to `http://127.0.0.1:8765/mcp` using `Authorization: Bearer <the tok
 
 ## Edit in the FilmCraft window
 
+For development and live provider testing, use `npm run dev`. This rebuilds the plugin and native debug executable and launches directly from the checkout. Its settings, session file, editor data and debug logs live under the Git-ignored `artifacts/dev` directory, separate from the installed app. Configure the provider in the sidebar and enable **Debug logging** when testing. `FILMCRAFT_PROJECT=/absolute/path/test.fcproj npm run dev` opens a test project. Close the dev window before rebuilding/restarting it. The installed preview is not updated by this command.
+
 To launch the embedded assistant sidebar:
 
 ```sh

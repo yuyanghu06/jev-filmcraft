@@ -1,6 +1,6 @@
 // Real desktop + MCP + engine. Provider replies are fixtures; no cloud credentials or charges.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,11 +22,14 @@ const mock = async (url, options) => {
   assert.equal(url, 'https://api.typesafe.ai/v1/systemone');
   assert.equal(options.headers['TypeSafe-Danger-Zone-Images'], 'true');
   const body = JSON.parse(options.body);
-  assert(body.assets[body.state.image.frame]);
+  if (body.questions.action) assert(body.assets[body.state.image.frame]);
+  else assert.equal(body.assets, undefined);
   requests++;
   const answers = {};
   for (const [key, q] of Object.entries(body.questions)) {
-    const selected = key === 'action' ? (action++ === 0 ? 'filmcraft_marker_add' : 'done') :
+    const selected = key === 'progress' ? 'done' : key === 'action' ? (action++ === 0 ? 'filmcraft_marker_add' : 'done') :
+      key === 'target' ? Object.keys(q.criteria).find(k => q.criteria[k]?.value === 'program') :
+      key.startsWith('present.') ? (['present.seconds', 'present.name'].includes(key) ? 'include' : 'omit') :
       key === 'seconds' ? Object.keys(q.criteria).find(k => q.criteria[k]?.value === 1) :
       key === 'name' ? Object.keys(q.criteria).find(k => q.criteria[k]?.value === 'Jev UI test') : '__omit__';
     assert(Object.hasOwn(q.criteria, selected), key);
@@ -69,16 +72,30 @@ try {
   await click('chat.settings');
   await click('chat.key');
   await control('ui.type', { text: 'fixture-only-not-a-real-api-key' });
+  await click('chat.settings.debug');
   await screenshot('jev-settings');
   await click('chat.settings.apply');
   await waitFor(s => s.status === 'Settings saved for this session');
   await click('chat.settings');
   await click('chat.prompt');
-  await control('ui.type', { text: 'Add a marker at 1 second named "Jev UI test".' });
+  await control('ui.type', { text: 'Add a marker at 1 second named "Jev UI test".\nKeep all existing clips unchanged.\nUse a point marker.\nUse the default color.\nKeep the default target.\nVerify the marker after creating it.\nDo not change any audio gain, clip durations, or track settings.' });
+  const composer = resultData(await call('ui_elements', { prefix: 'chat.' }));
+  const send = composer.find(e => e.id === 'chat.send');
+  const window = (await control('ui.inspect')).window;
+  assert(send && send.rect[1] + send.rect[3] < window[1], 'Long prompts must keep Send inside the window');
   await click('chat.send');
   await waitFor(s => s.status === 'done' || s.status === 'error');
   const finished = await control('chat.inspect');
   assert.equal(finished.status, 'done', JSON.stringify(finished));
+  assert.equal(finished.debugLogging, true);
+  assert(finished.debugPath);
+  assert.equal(finished.debugError, '');
+  const debugLog = await readFile(finished.debugPath, 'utf8');
+  const trace = debugLog.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(trace.filter(e => e.event === 'provider.response').length, 4);
+  assert(trace.some(e => e.event === 'jev.decision' && e.data.accepted));
+  assert(!debugLog.includes('fixture-only-not-a-real-api-key'));
+  await click('chat.debug.copy');
   assert.match(JSON.stringify(resultData(await call('sequence_inspect'))), /Jev UI test/);
   const external = new Client({ name: 'external-agent-install-test', version: '0.1.0' });
   try {
@@ -86,7 +103,7 @@ try {
     const shared = await external.callTool({ name: 'filmcraft_sequence_inspect', arguments: {} });
     assert.match(JSON.stringify(shared), /Jev UI test/, 'Installed external connector must share the sidebar project');
   } finally { await external.close(); }
-  assert.equal(requests, 3);
+  assert.equal(requests, 4);
   await screenshot('jev-tool-run');
   for (const theme of ['medium', 'light', 'dark']) {
     await control('ui.set', { theme });

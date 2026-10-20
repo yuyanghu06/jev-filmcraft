@@ -134,9 +134,11 @@ try {
   await click('chat.settings');
   await click('chat.key');
   await control('ui.type', { text: 'fixture-only-not-a-real-api-key' });
+  await click('chat.settings.debug');
   await click('chat.settings.apply');
   await waitFor(async () => (await control('chat.inspect')).status === 'Settings saved on this device', 'UI did not save settings');
   assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.apiKey, 'fixture-only-not-a-real-api-key');
+  assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.debugLogging, true);
   if (!windows) assert.equal((await stat(join(state, 'providers.json'))).mode & 0o777, 0o600);
   await call('project_save', { path: join(scratch, 'media/edit.fcproj') });
   const shot = (await call('ui_screenshot', { max_side: 1600 })).content.find(c => c.type === 'image');
@@ -145,6 +147,7 @@ try {
   await quit();
   await launch(true); // Mac restarts through Launch Services, Windows restarts its GUI executable.
   assert((await request('/v1/chat/providers')).providers.find(p => p.id === 'jev').configured, 'Saved key must survive restart');
+  assert.equal((await request('/v1/chat/providers')).providers.find(p => p.id === 'jev').debugLogging, true, 'Debug logging must survive restart');
   await request('/v1/chat/config', { provider: 'jev', apiKey: '', persist: true });
   assert.equal(JSON.parse(await readFile(join(state, 'providers.json'), 'utf8')).jev.apiKey, '');
   await quit();

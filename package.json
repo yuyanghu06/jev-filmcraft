@@ -19,6 +19,7 @@
     "check": "npm run build && npm test",
     "patch:filmcraft": "node plugins/filmcraft/native/apply.mjs",
     "chat": "node plugins/filmcraft/dist/cli.js desktop",
+    "dev": "npm run build && npm run build:desktop && node plugins/filmcraft/examples/dev.mjs",
     "chat:config": "node plugins/filmcraft/dist/cli.js providers-config",
     "test:chat-ui": "node plugins/filmcraft/examples/chat-ui-smoke.mjs",
     "package:mac": "node plugins/filmcraft/packaging/macos.mjs",

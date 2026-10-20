@@ -8,6 +8,7 @@ import { PluginError } from '../core.js';
 const settings = z.strictObject({
   apiKey: z.string().trim().max(4096).refine(value => !/[\r\n]/.test(value)).optional(),
   model: z.string().trim().min(1).max(200).optional(),
+  debugLogging: z.boolean().optional(),
 });
 const schema = z.strictObject({ claude: settings.optional(), chatgpt: settings.optional(), jev: settings.optional() });
 export const defaultProviderConfig = join(repository, 'plugins/filmcraft/config/providers.local.json');
@@ -35,7 +36,7 @@ async function readProviderConfig(env: NodeJS.ProcessEnv): Promise<z.infer<typeo
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     const fields = parsed.error.issues.map(issue => issue.path.join('.') || 'root').join(', ');
-    throw new PluginError('CONFIG', `Invalid provider configuration fields: ${fields}. Use claude/chatgpt/jev objects with apiKey and model strings.`, 400);
+    throw new PluginError('CONFIG', `Invalid provider configuration fields: ${fields}. Use claude/chatgpt/jev objects with apiKey/model strings and an optional debugLogging boolean.`, 400);
   }
   return parsed.data;
 }
@@ -51,11 +52,14 @@ export async function loadProviderEnvironment(env: NodeJS.ProcessEnv = process.e
     OPENAI_MODEL: env.OPENAI_MODEL ?? config.chatgpt?.model,
     TYPESAFE_API_KEY: env.TYPESAFE_API_KEY ?? env.JEV_API_KEY ?? config.jev?.apiKey,
     JEV_MODEL: env.JEV_MODEL ?? config.jev?.model,
+    ANTHROPIC_DEBUG_LOGGING: env.ANTHROPIC_DEBUG_LOGGING ?? (config.claude?.debugLogging ? '1' : '0'),
+    OPENAI_DEBUG_LOGGING: env.OPENAI_DEBUG_LOGGING ?? (config.chatgpt?.debugLogging ? '1' : '0'),
+    JEV_DEBUG_LOGGING: env.JEV_DEBUG_LOGGING ?? (config.jev?.debugLogging ? '1' : '0'),
   };
 }
 
 /** Persist only explicitly supplied fields, atomically, with owner-only permissions. */
-export async function saveProviderConfig(provider: 'claude' | 'chatgpt' | 'jev', patch: { apiKey?: string; model?: string }, env: NodeJS.ProcessEnv) {
+export async function saveProviderConfig(provider: 'claude' | 'chatgpt' | 'jev', patch: { apiKey?: string; model?: string; debugLogging?: boolean }, env: NodeJS.ProcessEnv) {
   const parsed = settings.safeParse(patch);
   if (!parsed.success) throw new PluginError('CONFIG', 'Invalid provider settings', 400);
   await initProviderConfig(env);
